@@ -231,10 +231,9 @@ class _ChatPageState extends State<ChatPage> {
 
   Future<void> _pickFiles() async {
     try {
-      final result = await FilePicker.pickFiles(allowMultiple: true);
-      if (result == null) return;
+      final files = await FilePicker.pickFiles();
       final picked = <_PendingFile>[];
-      for (final file in result.files) {
+      for (final file in files) {
         final bytes = await file.readAsBytes();
         if (bytes == null) continue;
         picked.add(_PendingFile(file.name, _guessMime(file.name), bytes));

@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -85,16 +84,12 @@ class _AccountsPageState extends State<AccountsPage> {
   /// Imports devices from a JSON export file.
   Future<void> _importDevices(BuildContext context) async {
     try {
-      final result = await FilePicker.pickFiles(
+      final files = await FilePicker.pickFiles(
         type: FileType.custom,
         allowedExtensions: ['json'],
       );
-      if (result == null || result.files.isEmpty) return;
-      final file = result.files.first;
-      var bytes = file.bytes;
-      if (bytes == null && file.path != null) {
-        bytes = await File(file.path!).readAsBytes();
-      }
+      if (files.isEmpty) return;
+      final bytes = await files.first.readAsBytes();
       if (bytes == null) return;
       final count = await widget.store.importJson(utf8.decode(bytes));
       if (!context.mounted) return;
