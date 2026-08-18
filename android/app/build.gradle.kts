@@ -20,7 +20,10 @@ fun propOrEnv(name: String): String? =
 
 android {
     namespace = "app.zemote"
-    compileSdk = flutter.compileSdkVersion
+    // 37 > flutter.compileSdkVersion (36): flutter_secure_storage 11
+    // compiles against SDK 37; compileSdk must be the highest of all
+    // modules (backward compatible, targetSdk is unaffected).
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
