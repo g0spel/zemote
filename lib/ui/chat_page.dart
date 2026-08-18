@@ -231,16 +231,16 @@ class _ChatPageState extends State<ChatPage> {
 
   Future<void> _pickFiles() async {
     try {
-      final result = await FilePicker.pickFiles(
-          withData: true, allowMultiple: true);
-      if (result == null) return;      setState(() {
-        for (final file in result.files) {
-          final bytes = file.bytes;
-          if (bytes == null) continue;
-          _pendingFiles.add(
-              _PendingFile(file.name, _guessMime(file.name), bytes));
-        }
-      });
+      final result = await FilePicker.pickFiles(allowMultiple: true);
+      if (result == null) return;
+      final picked = <_PendingFile>[];
+      for (final file in result.files) {
+        final bytes = await file.readAsBytes();
+        if (bytes == null) continue;
+        picked.add(_PendingFile(file.name, _guessMime(file.name), bytes));
+      }
+      if (picked.isEmpty) return;
+      setState(() => _pendingFiles.addAll(picked));
     } catch (e) {
       _toast('选择文件失败: $e');
     }
