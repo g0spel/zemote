@@ -1,8 +1,9 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:zemote/protocol/id.dart';
 import 'package:zemote/state/account_store.dart';
+
+import 'fake_credential_storage.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -69,7 +70,7 @@ void main() {
 
     test('fromUrl defaults label when host is empty', () {
       final account = Account.fromUrl(
-        'http:///remote/v4?sid=s&hash=h&t=1',
+        'https:///remote/v4?sid=s&hash=h&t=1',
       );
       expect(account.label, '');
     });
@@ -89,18 +90,15 @@ void main() {
   });
 
   group('AccountStore', () {
-    setUp(() {
-      SharedPreferences.setMockInitialValues({});
-    });
 
     test('initial state is empty', () {
-      final store = AccountStore();
+      final store = AccountStore(storage: FakeCredentialStorage());
       expect(store.accounts, isEmpty);
       expect(store.loaded, isFalse);
     });
 
     test('addUrl returns Account', () async {
-      final store = AccountStore();
+      final store = AccountStore(storage: FakeCredentialStorage());
       final account = await store.addUrl(
         'https://zcode.z.ai/remote/v4?sid=s&hash=h&t=1&name=MyDevice',
       );
@@ -109,7 +107,7 @@ void main() {
     });
 
     test('rename updates label', () async {
-      final store = AccountStore();
+      final store = AccountStore(storage: FakeCredentialStorage());
       final account = await store.addUrl(
         'https://zcode.z.ai/remote/v4?sid=s&hash=h&t=1&name=Old',
       );
@@ -118,7 +116,7 @@ void main() {
     });
 
     test('remove deletes account', () async {
-      final store = AccountStore();
+      final store = AccountStore(storage: FakeCredentialStorage());
       final account = await store.addUrl(
         'https://zcode.z.ai/remote/v4?sid=s&hash=h&t=1&name=Device',
       );
@@ -128,7 +126,7 @@ void main() {
     });
 
     test('touch updates lastUsedAt', () async {
-      final store = AccountStore();
+      final store = AccountStore(storage: FakeCredentialStorage());
       final account = await store.addUrl(
         'https://zcode.z.ai/remote/v4?sid=s&hash=h&t=1',
       );

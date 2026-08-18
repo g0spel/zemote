@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -50,6 +51,13 @@ class _UpdateDialogState extends State<_UpdateDialog> {
       _openRelease();
       return;
     }
+    // No published checksum → no integrity guarantee → no in-app install.
+    if (widget.info.checksumUrl == null) {
+      if (!mounted) return;
+      setState(() => _error = '该发布缺少 SHA-256 校验值，已复制链接，请手动下载安装');
+      _openRelease();
+      return;
+    }
     final canInstall =
         await apkChannel.invokeMethod<bool>('canInstall') ?? false;
     if (!canInstall) {
@@ -69,6 +77,16 @@ class _UpdateDialogState extends State<_UpdateDialog> {
         if (mounted) setState(() => _progress = p);
       });
       if (!mounted) return;
+      final verified = await _verifyChecksum(file);
+      if (!mounted) return;
+      if (!verified) {
+        file.deleteSync();
+        setState(() {
+          _phase = _Phase.prompt;
+          _error = 'SHA-256 校验失败，已删除下载文件并取消安装';
+        });
+        return;
+      }
       final ok = await apkChannel
               .invokeMethod<bool>('installApk', {'path': file.path}) ??
           false;
@@ -137,6 +155,19 @@ class _UpdateDialogState extends State<_UpdateDialog> {
     } finally {
       client.close();
     }
+  }
+
+  /// Downloads the `.sha256` asset published next to the APK and compares
+  /// it against the streamed hash of the downloaded file. Any mismatch (or
+  /// unreadable checksum) fails the update.
+  Future<bool> _verifyChecksum(File file) async {
+    final res = await http
+        .get(Uri.parse(widget.info.checksumUrl!))
+        .timeout(const Duration(seconds: 15));
+    final expected = parseChecksumHex(res.body);
+    if (expected == null) return false;
+    final actual = (await sha256.bind(file.openRead()).first).toString();
+    return actual == expected;
   }
 
   void _openRelease() {

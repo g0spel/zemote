@@ -109,18 +109,27 @@ class MainActivity : FlutterActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        pendingNotificationPayload = intent?.getStringExtra("notificationTask")
+        pendingNotificationPayload = drainNotificationTapPayload()
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        val payload = intent.getStringExtra("notificationTask")
+        val payload = drainNotificationTapPayload()
         if (payload != null) {
-            pendingNotificationPayload = payload
             pushPayloadToDart(payload)
         }
     }
+
+    /**
+     * Notification payloads are handed over in process memory by the
+     * unexported [NotificationTapActivity] — never via intent extras on this
+     * exported activity, so other apps cannot forge a deep link.
+     */
+    private fun drainNotificationTapPayload(): String? =
+        NotificationTapActivity.pendingPayload?.also {
+            NotificationTapActivity.clearPendingPayload()
+        }
 
     private fun pushPayloadToDart(payload: String) {
         val engine = flutterEngine
@@ -150,8 +159,9 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun apkDir(): File =
-        getExternalFilesDir(null) ?: filesDir
+    /** Internal dir for downloaded update APKs — app-private on every API
+     *  level, unlike getExternalFilesDir which is world-readable pre-Q. */
+    private fun apkDir(): File = File(filesDir, "update").apply { mkdirs() }
 
     private fun canRequestPackageInstalls(): Boolean =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

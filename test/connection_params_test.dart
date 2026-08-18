@@ -3,65 +3,80 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:zemote/protocol/connection_params.dart';
 
 void main() {
-  group('uriSchemeIsSecure', () {
-    test('https → secure', () {
-      final params = ZemoteConnectionParams(
-        deviceSid: 'sid',
-        passHash: 'hash',
-        timestamp: 1,
-        source: Uri.parse('https://zcode.z.ai/remote'),
+  group('scheme enforcement', () {
+    test('https URL parses', () {
+      expect(
+        ZemoteConnectionParams.parse(
+            'https://zcode.z.ai/remote/v4?sid=s&hash=h&t=1'),
+        isNotNull,
       );
-      expect(params.uriSchemeIsSecure, isTrue);
     });
 
-    test('wss → secure', () {
-      final params = ZemoteConnectionParams(
-        deviceSid: 'sid',
-        passHash: 'hash',
-        timestamp: 1,
-        source: Uri.parse('wss://zcode.z.ai/ws'),
+    test('wss URL parses', () {
+      expect(
+        ZemoteConnectionParams.parse(
+            'wss://zcode.z.ai/remote/v4?sid=s&hash=h&t=1'),
+        isNotNull,
       );
-      expect(params.uriSchemeIsSecure, isTrue);
     });
 
-    test('http → not secure', () {
-      final params = ZemoteConnectionParams(
-        deviceSid: 'sid',
-        passHash: 'hash',
-        timestamp: 1,
-        source: Uri.parse('http://zcode.z.ai/remote'),
+    test('http URL is rejected (cleartext downgrade)', () {
+      expect(
+        ZemoteConnectionParams.parse(
+            'http://zcode.z.ai/remote/v4?sid=s&hash=h&t=1'),
+        isNull,
       );
-      expect(params.uriSchemeIsSecure, isFalse);
     });
 
-    test('ws → not secure', () {
-      final params = ZemoteConnectionParams(
-        deviceSid: 'sid',
-        passHash: 'hash',
-        timestamp: 1,
-        source: Uri.parse('ws://zcode.z.ai/ws'),
+    test('localhost http URL is rejected', () {
+      expect(
+        ZemoteConnectionParams.parse(
+            'http://localhost:3000/remote/v4?sid=s&hash=h&t=1'),
+        isNull,
       );
-      expect(params.uriSchemeIsSecure, isFalse);
     });
 
-    test('ftp → not secure (was bug)', () {
-      final params = ZemoteConnectionParams(
-        deviceSid: 'sid',
-        passHash: 'hash',
-        timestamp: 1,
-        source: Uri.parse('ftp://bad.example.com/remote'),
+    test('ws URL is rejected', () {
+      expect(
+        ZemoteConnectionParams.parse('ws://zcode.z.ai/ws?sid=s&hash=h&t=1'),
+        isNull,
       );
-      expect(params.uriSchemeIsSecure, isFalse);
     });
 
-    test('unknown scheme → not secure', () {
-      final params = ZemoteConnectionParams(
-        deviceSid: 'sid',
-        passHash: 'hash',
-        timestamp: 1,
-        source: Uri.parse('file:///etc/passwd'),
+    test('non-http scheme is rejected', () {
+      expect(
+        ZemoteConnectionParams.parse(
+            'ftp://bad.example.com/remote/v4?sid=s&hash=h&t=1'),
+        isNull,
       );
-      expect(params.uriSchemeIsSecure, isFalse);
+      expect(
+        ZemoteConnectionParams.parse('file:///etc/passwd?sid=s&hash=h&t=1'),
+        isNull,
+      );
+    });
+
+    test('scheme check is case-insensitive', () {
+      expect(
+        ZemoteConnectionParams.parse(
+            'HTTPS://zcode.z.ai/remote/v4?sid=s&hash=h&t=1'),
+        isNotNull,
+      );
+    });
+  });
+
+  group('isOfficialHost', () {
+    test('official host', () {
+      final params = ZemoteConnectionParams.parse(
+        'https://zcode.z.ai/remote/v4?sid=s&hash=h&t=1',
+      );
+      expect(params!.isOfficialHost, isTrue);
+    });
+
+    test('other host', () {
+      final params = ZemoteConnectionParams.parse(
+        'https://evil.example.com/remote/v4?sid=s&hash=h&t=1',
+      );
+      expect(params!.isOfficialHost, isFalse);
     });
   });
 
@@ -73,11 +88,11 @@ void main() {
       expect(params!.relayWsUri.toString(), 'wss://zcode.z.ai/ws?mid=m');
     });
 
-    test('http → ws', () {
+    test('wss source stays wss', () {
       final params = ZemoteConnectionParams.parse(
-        'http://localhost:3000/remote/v4?sid=s&hash=h&t=1',
+        'wss://relay.example.com/remote/v4?sid=s&hash=h&t=1',
       );
-      expect(params!.relayWsUri.toString(), 'ws://localhost:3000/ws');
+      expect(params!.relayWsUri.toString(), 'wss://relay.example.com/ws');
     });
 
     test('port is preserved', () {

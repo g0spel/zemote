@@ -25,4 +25,27 @@ void main() {
       expect(compareVersions('1.x', '1.0.0'), 0);
     });
   });
+
+  group('parseChecksumHex', () {
+    test('extracts digest from sha256sum output', () {
+      const content =
+          'a3f5b7c9d2e4f6081a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081  app-release.apk\n';
+      expect(parseChecksumHex(content),
+          'a3f5b7c9d2e4f6081a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081');
+    });
+
+    test('uppercase digests are lowercased', () {
+      const content =
+          'A3F5B7C9D2E4F6081A2B3C4D5E6F708192A3B4C5D6E7F8091A2B3C4D5E6F7081  x.apk';
+      expect(parseChecksumHex(content),
+          'a3f5b7c9d2e4f6081a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081');
+    });
+
+    test('returns null when no 64-hex digest present', () {
+      expect(parseChecksumHex('not a checksum'), isNull);
+      expect(parseChecksumHex(''), isNull);
+      // 63 hex chars is not a SHA-256 digest.
+      expect(parseChecksumHex('a' * 63), isNull);
+    });
+  });
 }

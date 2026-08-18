@@ -8,6 +8,7 @@
     <application
         android:label="Zemote"
         android:name="${applicationName}"
+        android:allowBackup="false"
         android:icon="@mipmap/ic_launcher">
         <activity
             android:name=".MainActivity"
@@ -31,6 +32,14 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- Unexported trampoline for notification taps: stashes the payload
+             in process memory and launches MainActivity with a clean intent,
+             so no other app can forge a notificationTask deep link. -->
+        <activity
+            android:name=".NotificationTapActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.NoDisplay"/>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

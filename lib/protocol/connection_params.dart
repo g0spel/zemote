@@ -1,7 +1,9 @@
 /// Parses a ZCode web-remote connection URL, e.g.
 /// https://zcode.z.ai/remote/v4?sid=...&hash=...&t=...&mid=...&name=...&app_version=...
 ///
-/// Mirrors `zC()` in the web client bundle.
+/// Mirrors `zC()` in the web client bundle. Only `https`/`wss` sources are
+/// accepted: a cleartext source would downgrade the relay link to `ws://`,
+/// exposing the whole session (including RPC traffic) to a network MITM.
 class ZemoteConnectionParams {
   final String deviceSid;
   final String passHash;
@@ -35,6 +37,8 @@ class ZemoteConnectionParams {
     } catch (_) {
       return null;
     }
+    final scheme = uri.scheme.toLowerCase();
+    if (scheme != 'https' && scheme != 'wss') return null;
     final sid = _get(uri, 'sid');
     final hash = _get(uri, 'hash');
     final t = int.tryParse(_get(uri, 't') ?? '');
@@ -52,11 +56,11 @@ class ZemoteConnectionParams {
   }
 
   /// Relay websocket URL. Mirrors `Jc()` / `pen.connect()`:
-  /// `${ws(s)://<host>/ws` plus `?mid=` when present.
+  /// `wss://<host>/ws` plus `?mid=` when present. Always TLS — cleartext
+  /// `ws://` sessions can be read and rewritten by a network attacker.
   Uri get relayWsUri {
-    final scheme = uriSchemeIsSecure ? 'wss' : 'ws';
     final base = Uri(
-      scheme: scheme,
+      scheme: 'wss',
       host: source.host,
       port: source.hasPort ? source.port : null,
       path: '/ws',
@@ -65,5 +69,8 @@ class ZemoteConnectionParams {
     return base.replace(queryParameters: {'mid': deviceMid});
   }
 
-  bool get uriSchemeIsSecure => source.scheme == 'https' || source.scheme == 'wss';
+  /// Whether the source points at the official ZCode relay host. Devices on
+  /// other hosts receive every message the user sends, so the UI warns
+  /// before saving them (see `accounts_page.dart`).
+  bool get isOfficialHost => source.host.toLowerCase() == 'zcode.z.ai';
 }

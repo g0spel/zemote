@@ -2,6 +2,19 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.4.0] - 2026-08-19
+
+fork 首个版本：安全加固（基于对上游 0.3.5 的审计）。包名改为 `dev.g0spel.zemote`，可与上游版本共存安装；minSdk 跟随 Flutter 稳定版要求为 24（放弃 Android 6 及以下）。
+
+### Security
+- 连接 URL 仅接受 `https`/`wss`，relay 永远走 `wss://`，杜绝 `ws://` 明文降级（网络中间人可读取/篡改会话）。
+- 添加非 `zcode.z.ai` 主机的设备前弹窗确认，防止被调换的二维码把对话内容静默送往第三方服务器。
+- 设备凭据改用 flutter_secure_storage（Android Keystore）加密存储，不再明文写入 SharedPreferences；`android:allowBackup="false"` 阻止凭据进入系统云备份。
+- CI 三方 action 全部钉 commit SHA；Release 附带 `app-release.apk.sha256`；应用内更新下载后先做 SHA-256 校验，校验不过拒绝安装、缺少校验值只提示手动下载。
+- 通知点击改经未导出的 `NotificationTapActivity` 内存交接 payload，其他应用无法再通过 exported 启动器伪造 deep-link。
+- 更新 APK 下载到内部 `filesDir/update/`（原为外部应用目录），FileProvider 仅暴露该子目录。
+- 更新源指向本 fork（`g0spel/zemote`）的 GitHub Releases；手动 dispatch 只构建不发布。
+
 ## [0.3.5] - 2026-08-07
 
 ### Fixed

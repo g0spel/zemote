@@ -1,10 +1,10 @@
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../protocol/connection_params.dart';
 import '../protocol/id.dart';
+import 'credential_storage.dart';
 
 class Account {
   final String id;
@@ -52,9 +52,14 @@ class Account {
       );
 }
 
-/// Multi-account store persisted in SharedPreferences.
+/// Multi-account store. Credentials are persisted encrypted at rest via
+/// [CredentialStorage] (Keystore/keychain — see `credential_storage.dart`),
+/// never in plain SharedPreferences.
 class AccountStore extends ChangeNotifier {
-  static const _prefsKey = 'zemote_accounts_v1';
+  final CredentialStorage _storage;
+
+  AccountStore({CredentialStorage storage = const SecureCredentialStorage()})
+      : _storage = storage;
 
   final List<Account> _accounts = [];
   List<Account> get accounts => List.unmodifiable(_accounts);
@@ -63,8 +68,7 @@ class AccountStore extends ChangeNotifier {
   bool get loaded => _loaded;
 
   Future<void> load() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_prefsKey);
+    final raw = await _storage.read();
     _accounts.clear();
     if (raw != null) {
       try {
@@ -85,9 +89,7 @@ class AccountStore extends ChangeNotifier {
   }
 
   Future<void> _save() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(
-      _prefsKey,
+    await _storage.write(
       jsonEncode(_accounts.map((a) => a.toJson()).toList()),
     );
   }

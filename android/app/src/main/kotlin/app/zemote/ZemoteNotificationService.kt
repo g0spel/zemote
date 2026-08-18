@@ -126,7 +126,7 @@ object TaskNotifications {
                 enableVibration(false)
             }
         )
-        val tapIntent = Intent(context, MainActivity::class.java).apply {
+        val tapIntent = Intent(context, NotificationTapActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
             if (payload != null) putExtra("notificationTask", payload)
         }

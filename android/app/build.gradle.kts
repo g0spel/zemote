@@ -29,8 +29,9 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "app.zemote"
+        // Fork package id: differs from upstream `app.zemote` so this build
+        // installs alongside the original (signatures are different too).
+        applicationId = "dev.g0spel.zemote"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
@@ -43,6 +44,8 @@ android {
         create("release") {
             val storeFileProp = propOrEnv("storeFile")
             if (!storeFileProp.isNullOrBlank()) {
+                // Keystore is a PKCS12 file (generated with openssl).
+                storeType = "PKCS12"
                 keyAlias = propOrEnv("keyAlias")
                 keyPassword = propOrEnv("keyPassword")
                 storeFile = file(storeFileProp)

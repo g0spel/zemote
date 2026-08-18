@@ -6,8 +6,8 @@
 
 [![Flutter](https://img.shields.io/badge/Flutter-3.5%2B-blue.svg?logo=flutter)](https://flutter.dev)
 [![Dart](https://img.shields.io/badge/Dart-3.5%2B-0175C2.svg?logo=dart)](https://dart.dev)
-[![CI](https://github.com/HumanAILoop/zemote/actions/workflows/build-apk.yml/badge.svg)](https://github.com/HumanAILoop/zemote/actions/workflows/build-apk.yml)
-[![Release](https://img.shields.io/github/v/release/HumanAILoop/zemote)](https://github.com/HumanAILoop/zemote/releases)
+[![CI](https://github.com/g0spel/zemote/actions/workflows/build-apk.yml/badge.svg)](https://github.com/g0spel/zemote/actions/workflows/build-apk.yml)
+[![Release](https://img.shields.io/github/v/release/g0spel/zemote)](https://github.com/g0spel/zemote/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Android%20%7C%20Web%20%7C%20Windows-lightgrey.svg)](#平台)
 

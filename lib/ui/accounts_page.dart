@@ -5,6 +5,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../protocol/connection_params.dart';
 import '../protocol/relay_client.dart';
 import '../state/account_store.dart';
 import '../state/app_session.dart';
@@ -108,6 +109,37 @@ class _AccountsPageState extends State<AccountsPage> {
     }
   }
 
+  /// Devices on a non-official relay host receive every message the user
+  /// sends. Confirm before saving so a swapped QR code can't silently
+  /// redirect conversations to an attacker's server.
+  Future<bool> _confirmUnofficialUrl(String url) async {
+    final params = ZemoteConnectionParams.parse(url);
+    if (params == null || params.isOfficialHost) return true;
+    if (!mounted) return false;
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('非官方服务器'),
+        content: Text(
+          '该链接指向 ${params.source.host}，不是官方地址 zcode.z.ai。\n'
+          '连接后，你发送的所有对话内容都会经过这台服务器。'
+          '仅在你确信来源可靠时继续。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('仍要添加'),
+          ),
+        ],
+      ),
+    );
+    return go ?? false;
+  }
+
   Future<void> _addByUrl() async {
     final controller = TextEditingController();
     final url = await showDialog<String>(
@@ -138,6 +170,7 @@ class _AccountsPageState extends State<AccountsPage> {
     );
     controller.dispose();
     if (url == null || url.isEmpty) return;
+    if (!await _confirmUnofficialUrl(url)) return;
     final account = await widget.store.addUrl(url);
     if (account.params == null && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -151,6 +184,7 @@ class _AccountsPageState extends State<AccountsPage> {
       MaterialPageRoute(builder: (_) => const QrScanPage()),
     );
     if (url == null || url.isEmpty) return;
+    if (!await _confirmUnofficialUrl(url)) return;
     await widget.store.addUrl(url);
   }
 
