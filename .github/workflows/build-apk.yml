@@ -54,8 +54,16 @@ jobs:
             echo "WARN: ANDROID_KEYSTORE_BASE64 secret missing; APK will use debug signing."
           fi
 
+      # arm64-only release artifact (~1/3 the size of the fat APK; 32-bit
+      # and x86 devices must build locally without --target-platform).
+      # APP_VERSION is injected so pubspec.yaml is the single version source.
       - name: Build APK (release)
-        run: flutter build apk --release
+        run: |
+          VERSION=$(awk -F'[ +]' '/^version:/ {print $2}' pubspec.yaml)
+          echo "building v$VERSION"
+          flutter build apk --release \
+            --target-platform android-arm64 \
+            --dart-define=APP_VERSION=$VERSION
 
       # The app verifies this checksum before handing a downloaded APK to
       # the installer (see lib/update/update_dialog.dart).

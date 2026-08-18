@@ -2,6 +2,22 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.5.0] - 2026-08-19
+
+### Added
+- 更新下载支持断点续传（Range/206，弱网中断不再整包重下）。
+- 协议日志页：复制全部 / 导出为文件；条目重新排版（时间戳与内容分色分行、条目间留白）；`[诊断]` 行红色加粗高亮。
+- 故障自诊断：relay 未知帧类型 / 非 JSON 帧 / 未知关闭码 / 配对挑战缺 nonce / 会话逻辑帧解析失败，均记 `[诊断]` 说明并疑似协议变更时提示导出日志；连接失败按原因给出中文解释与建议动作（凭据失效 / 桌面离线 / 网络错误 / 配对超时等），配对失败立即以真实原因中断而非等待超时。
+- Dependabot 每月自动依赖 PR（pub + github-actions）。
+
+### Changed
+- 发布产物改为 arm64 单架构 APK（约 25MB，原 77MB 三架构 fat 包）。
+- 版本号单一来源：CI 从 pubspec.yaml 提取并 `--dart-define=APP_VERSION` 注入，发版只改 pubspec + 打 tag。
+- 无法解析的 URL 直接拒绝保存（不再"仍已保存"）；扫码入口同样校验。
+- Android Gradle Plugin 8.13.2 → 9.0.1。
+- CI 新增 web 编译冒烟（拦住 analyze 无法发现的依赖 API 破坏）。
+- README 顶部注明本 fork 为实验项目，日常使用请选上游。
+
 ## [0.4.0] - 2026-08-19
 
 fork 首个版本：安全加固（基于对上游 0.3.5 的审计）。包名改为 `dev.g0spel.zemote`，可与上游版本共存安装；minSdk 跟随 Flutter 稳定版要求为 24（放弃 Android 6 及以下）。

@@ -72,7 +72,8 @@ class _UpdateDialogState extends State<_UpdateDialog> {
     try {
       final dir = await apkChannel.invokeMethod<String>('getApkDir');
       final file = File('$dir/zemote-${widget.info.latestVersion}.apk');
-      if (file.existsSync()) file.deleteSync();
+      // Partial files are kept for resume; a corrupt download is caught by
+      // the checksum step (which deletes the file) and retried fresh.
       await _download(apkUrl, file.path, (p) {
         if (mounted) setState(() => _progress = p);
       });
@@ -128,6 +129,9 @@ class _UpdateDialogState extends State<_UpdateDialog> {
     );
   }
 
+  /// Resumable download: sends a `Range` header when a partial file exists;
+  /// a `206` response appends from the breakpoint (total size taken from
+  /// `Content-Range`), a plain `200` restarts from scratch.
   Future<void> _download(
     String url,
     String path,
@@ -135,13 +139,32 @@ class _UpdateDialogState extends State<_UpdateDialog> {
   ) async {
     final client = http.Client();
     try {
-      final res = await client.send(http.Request('GET', Uri.parse(url)));
-      if (res.statusCode != 200) {
+      var start = 0;
+      final target = File(path);
+      if (target.existsSync()) start = target.lengthSync();
+      final request = http.Request('GET', Uri.parse(url));
+      if (start > 0) request.headers['Range'] = 'bytes=$start-';
+      final res = await client.send(request);
+      final resumed = res.statusCode == 206;
+      if (res.statusCode != 200 && !resumed) {
         throw HttpException('HTTP ${res.statusCode}');
       }
-      final total = res.contentLength;
-      var received = 0;
-      final sink = File(path).openWrite();
+      var received = resumed ? start : 0;
+      int? total;
+      if (resumed) {
+        // content-range: bytes start-last/total
+        final m = RegExp(r'/(\d+)\s*$').firstMatch(res.headers['content-range'] ?? '');
+        total = m == null ? null : int.tryParse(m.group(1)!);
+      } else {
+        total = res.contentLength;
+        if (!resumed && start > 0) {
+          // Server ignored Range — start over with a clean file.
+          start = 0;
+          target.deleteSync();
+        }
+      }
+      final sink = File(path).openWrite(
+          mode: resumed ? FileMode.append : FileMode.write);
       try {
         await for (final chunk in res.stream) {
           received += chunk.length;

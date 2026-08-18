@@ -2,6 +2,10 @@
 
 # Zemote
 
+> ## ⚠️ 实验性 Fork，请勿日常使用
+> **本仓库是 [HumanAILoop/zemote](https://github.com/HumanAILoop/zemote) 的个人实验分支**（安全加固与改造试验），不保证功能与稳定性，更新也不及时。
+> **日常使用请选择上游原版：[HumanAILoop/zemote](https://github.com/HumanAILoop/zemote)**
+
 **手机/平板上的 ZCode 远程控制客户端** — 独立复刻官方 Web 远程控制协议（protocol reimplementation）
 
 [![Flutter](https://img.shields.io/badge/Flutter-3.5%2B-blue.svg?logo=flutter)](https://flutter.dev)

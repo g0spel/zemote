@@ -1,7 +1,8 @@
-/// Current app version. Keep in sync with `pubspec.yaml` (version: X.Y.Z+N).
+/// Current app version.
 ///
-/// Used for update checks against the GitHub latest release. Hardcoded
-/// instead of `package_info_plus` because adding a native plugin currently
-/// requires Windows Developer Mode (symlink support).
-const appVersion = '0.4.0';
+/// Injected at build time by CI via `--dart-define=APP_VERSION=X.Y.Z`
+/// (see `.github/workflows/build-apk.yml`, which reads it from
+/// `pubspec.yaml`). The default only serves local `flutter run`/`flutter
+/// test` without the define and must be kept in sync with `pubspec.yaml`.
+const appVersion = String.fromEnvironment('APP_VERSION', defaultValue: '0.5.0');
 const appBuildNumber = 1;

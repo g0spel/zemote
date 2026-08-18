@@ -130,6 +130,8 @@ class ZemoteClient {
   }
 
   /// Waits until the relay reports `matched` (paired with the desktop).
+  /// Fails fast with the relay's failure reason (credential/desktop/relay
+  /// errors) instead of waiting out the full timeout.
   Future<void> waitPaired({Duration timeout = const Duration(seconds: 60)}) {
     if (relay.state == RelayState.paired) return Future.value();
     final completer = Completer<void>();
@@ -141,6 +143,15 @@ class ZemoteClient {
       }
     }
 
+    StreamSubscription? failureSub;
+    failureSub = relay.failures.listen((f) {
+      if (!completer.isCompleted) {
+        timer?.cancel();
+        completer.completeError(
+            StateError('${f.reason}${f.message == null ? '' : ': ${f.message}'}'),
+            StackTrace.current);
+      }
+    });
     relay.stateListenable.addListener(listener);
     timer = Timer(timeout, () {
       if (!completer.isCompleted) {
@@ -150,6 +161,7 @@ class ZemoteClient {
     return completer.future.whenComplete(() {
       timer?.cancel();
       relay.stateListenable.removeListener(listener);
+      failureSub?.cancel();
     });
   }
 

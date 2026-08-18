@@ -27,3 +27,9 @@ jobs:
 
       - name: Run unit tests
         run: flutter test
+
+      # Compile smoke: catches breaking API changes in dependencies that
+      # `flutter analyze` misses (e.g. file_picker v12's changed return
+      # types) — those only surface at build time.
+      - name: Compile smoke (web)
+        run: flutter build web --release

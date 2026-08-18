@@ -164,13 +164,17 @@ class _AccountsPageState extends State<AccountsPage> {
     );
     controller.dispose();
     if (url == null || url.isEmpty) return;
-    if (!await _confirmUnofficialUrl(url)) return;
-    final account = await widget.store.addUrl(url);
-    if (account.params == null && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('URL 无法解析，但仍已保存，可稍后编辑')),
-      );
+    if (ZemoteConnectionParams.parse(url) == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('无法解析该链接：需为 https 且包含 sid、hash、t 参数')),
+        );
+      }
+      return;
     }
+    if (!await _confirmUnofficialUrl(url)) return;
+    await widget.store.addUrl(url);
   }
 
   Future<void> _addByScan() async {
@@ -178,6 +182,15 @@ class _AccountsPageState extends State<AccountsPage> {
       MaterialPageRoute(builder: (_) => const QrScanPage()),
     );
     if (url == null || url.isEmpty) return;
+    if (ZemoteConnectionParams.parse(url) == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('二维码内容不是有效链接：需为 https 且包含 sid、hash、t 参数')),
+        );
+      }
+      return;
+    }
     if (!await _confirmUnofficialUrl(url)) return;
     await widget.store.addUrl(url);
   }

@@ -1,6 +1,11 @@
+import 'dart:convert';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../state/log_store.dart';
+import 'theme.dart';
 
 class LogPage extends StatefulWidget {
   const LogPage({super.key});
@@ -31,6 +36,36 @@ class _LogPageState extends State<LogPage> {
     }
   }
 
+  Future<void> _copyAll() async {
+    final text = LogStore.instance.entries.map((e) => e.plain).join('\n');
+    await Clipboard.setData(ClipboardData(text: text));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('已复制 ${LogStore.instance.entries.length} 条日志')));
+    }
+  }
+
+  Future<void> _export() async {
+    final text = LogStore.instance.entries.map((e) => e.plain).join('\n');
+    try {
+      final path = await FilePicker.saveFile(
+        dialogTitle: '导出协议日志',
+        fileName: 'zemote-logs.txt',
+        bytes: utf8.encode(text),
+      );
+      if (path == null) return; // cancelled
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('日志已导出。注意：日志含设备凭据片段，请妥善保管')));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('导出失败: $e')));
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -38,7 +73,18 @@ class _LogPageState extends State<LogPage> {
         title: const Text('协议日志'),
         actions: [
           IconButton(
+            icon: const Icon(Icons.copy_all_outlined),
+            tooltip: '复制全部',
+            onPressed: _copyAll,
+          ),
+          IconButton(
+            icon: const Icon(Icons.save_outlined),
+            tooltip: '导出为文件',
+            onPressed: _export,
+          ),
+          IconButton(
             icon: const Icon(Icons.delete_outline),
+            tooltip: '清空',
             onPressed: () => LogStore.instance.clear(),
           ),
         ],
@@ -52,14 +98,45 @@ class _LogPageState extends State<LogPage> {
           }
           return ListView.builder(
             controller: _scrollController,
+            padding: const EdgeInsets.symmetric(vertical: 6),
             itemCount: entries.length,
-            itemBuilder: (context, index) => Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              child: Text(
-                entries[index],
-                style: const TextStyle(fontFamily: 'monospace', fontSize: 10),
-              ),
-            ),
+            itemBuilder: (context, index) {
+              final e = entries[index];
+              return Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '${e.time.hour.toString().padLeft(2, '0')}'
+                      ':${e.time.minute.toString().padLeft(2, '0')}'
+                      ':${e.time.second.toString().padLeft(2, '0')}'
+                      '.${e.time.millisecond.toString().padLeft(3, '0')}',
+                      style: TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 9,
+                        color: ZInk.faint(context),
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      e.message,
+                      style: TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 10.5,
+                        height: 1.4,
+                        color: e.isDiagnostic
+                            ? ZColors.danger
+                            : ZInk.solid(context),
+                        fontWeight:
+                            e.isDiagnostic ? FontWeight.w600 : FontWeight.w400,
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
           );
         },
       ),
