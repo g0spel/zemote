@@ -2,6 +2,11 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.5.2] - 2026-08-19
+
+### Added
+- 崩溃本地留痕：framework 异常与未捕获异步错误写入应用数据目录（`last_crash.json`，单槽覆盖，超长堆栈截断），下次启动在协议日志记 `[诊断]` 提示；设置页新增"上次崩溃"卡片，可查看时间/类型/版本/堆栈全文、复制、清除。Web 端不落盘。
+
 ## [0.5.1] - 2026-08-19
 
 ### Fixed

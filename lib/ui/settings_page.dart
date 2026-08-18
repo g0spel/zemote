@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../protocol/zemote_client.dart';
+import '../state/crash_report.dart';
 import '../update/app_version.dart';
 import '../update/update_checker.dart';
 import '../update/update_dialog.dart';
@@ -56,6 +57,8 @@ class SettingsPage extends StatelessWidget {
             onTap: () => _checkUpdates(context),
           ),
         ),
+        const SizedBox(height: 12),
+        const _LastCrashCard(),
         const SizedBox(height: 12),
         if (controller != null)
           Card(
@@ -323,5 +326,93 @@ class SettingsPage extends StatelessWidget {
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text('检查更新失败: $e')));
     }
+  }
+}
+
+/// Shows the last persisted crash (from [crashStore]), hidden when none.
+class _LastCrashCard extends StatefulWidget {
+  const _LastCrashCard();
+
+  @override
+  State<_LastCrashCard> createState() => _LastCrashCardState();
+}
+
+class _LastCrashCardState extends State<_LastCrashCard> {
+  CrashInfo? _crash;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final c = await crashStore?.read();
+    if (mounted) setState(() => _crash = c);
+  }
+
+  void _showDetails() {
+    final c = _crash;
+    if (c == null) return;
+    final text = '时间: ${c.time}\n类型: ${c.kind}\n版本: v${c.appVersion}\n\n'
+        '${c.error}\n\n${c.stack ?? ''}';
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('上次崩溃'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: SingleChildScrollView(
+            child: SelectableText(
+              text,
+              style: const TextStyle(fontFamily: 'monospace', fontSize: 10.5),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: text));
+              ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('崩溃详情已复制')));
+            },
+            child: const Text('复制'),
+          ),
+          TextButton(
+            onPressed: () async {
+              await crashStore?.clear();
+              if (context.mounted) Navigator.pop(context);
+              await _load();
+            },
+            child: const Text('清除'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = _crash;
+    if (c == null) return const SizedBox.shrink();
+    return Card(
+      child: ListTile(
+        leading: Icon(Icons.bug_report_outlined,
+            size: 20, color: ZColors.danger),
+        title: const Text('上次崩溃'),
+        subtitle: Text(
+          '${c.time} · ${c.error.split('\n').first}',
+          style: const TextStyle(fontSize: 12),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: _showDetails,
+      ),
+    );
   }
 }

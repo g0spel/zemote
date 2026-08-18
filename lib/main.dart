@@ -1,7 +1,13 @@
+import 'dart:io';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 
 import 'state/account_store.dart';
 import 'state/app_session.dart';
+import 'state/crash_report.dart';
+import 'state/log_store.dart';
 import 'ui/accounts_page.dart';
 import 'ui/theme.dart';
 import 'ui/ui_settings.dart';
@@ -11,7 +17,25 @@ import 'notifications/notifications.dart';
 
 final navigatorKey = GlobalKey<NavigatorState>();
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  // Crash evidence: persist the last framework/uncaught error so it
+  // survives the process and can be inspected on the next launch.
+  if (!kIsWeb) {
+    try {
+      final dir = await getApplicationSupportDirectory();
+      final store = CrashStore(File('${dir.path}/last_crash.json'));
+      crashStore = store;
+      installCrashHandlers(store);
+      final last = await store.read();
+      if (last != null) {
+        log('[诊断] 检测到上次异常退出（${last.kind} · ${last.error.split('\n').first}）— '
+            '详情见 设置 → 上次崩溃');
+      }
+    } catch (_) {
+      // Crash evidence is best-effort; never block startup.
+    }
+  }
   runApp(const ZemoteApp());
 }
 
