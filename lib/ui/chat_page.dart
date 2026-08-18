@@ -91,8 +91,8 @@ class _ChatPageState extends State<ChatPage> {
 
   void _onScroll() {
     if (!_scrollController.hasClients) return;
-    final max = _scrollController.position.maxScrollExtent;
-    _stickToBottom = _scrollController.position.pixels >= max - 40;
+    // Reverse list: offset 0 is the newest (bottom) message.
+    _stickToBottom = _scrollController.position.pixels <= 40;
   }
 
   Future<void> _loadPrep() async {
@@ -134,6 +134,9 @@ class _ChatPageState extends State<ChatPage> {
         _subscription = sub;
         _error = null;
       });
+      // Reverse list: opening lands on the newest message by construction
+      // (offset 0 = bottom); the listener below only follows NEW deltas
+      // while the user stays pinned near the bottom.
       sub.state.addListener(_scrollToBottom);
       // The server snapshot is a tail window (can be as few as 3 rows).
       // The official client shows the full history immediately, so
@@ -141,9 +144,6 @@ class _ChatPageState extends State<ChatPage> {
       if (sub.state.canLoadOlder) {
         await _loadOlder();
       }
-      // Explicitly position at the newest message: the state listener only
-      // fires on LATER updates and misses the initial snapshot.
-      _scrollToBottom();
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
     }
@@ -152,13 +152,11 @@ class _ChatPageState extends State<ChatPage> {
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_scrollController.hasClients) return;
-      final max = _scrollController.position.maxScrollExtent;
-      // Snap to the newest message on open; afterwards only follow while the
-      // user is already near the bottom (so reading history isn't yanked).
-      if (_stickToBottom ||
-          _scrollController.position.pixels > max - 400) {
+      // Follow the newest message only while the user is pinned to the
+      // bottom (or within 400px), so reading history isn't yanked.
+      if (_stickToBottom || _scrollController.position.pixels < 400) {
         _scrollController.animateTo(
-          max,
+          0,
           duration: const Duration(milliseconds: 200),
           curve: Curves.easeOut,
         );
@@ -486,9 +484,8 @@ class _ChatPageState extends State<ChatPage> {
           ..sort((a, b) => ((a['rowId'] as num?) ?? 0)
               .compareTo((b['rowId'] as num?) ?? 0));
         state.prependOlderRows(older, firstRowId);
-        // Prepending shifts the content above; keep the newest message in
-        // view when the user is pinned to the bottom.
-        if (_stickToBottom) _scrollToBottom();
+        // Reverse list: prepended history extends the top end without
+        // moving the viewport — no scroll compensation needed.
       } else if (state.rows.isNotEmpty) {
         _toast('没有更早的消息了');
       }
@@ -708,13 +705,20 @@ class _ChatPageState extends State<ChatPage> {
                                     style:
                                         TextStyle(color: ZInk.faint(context))));
                           }
+                          // Reverse list: index 0 renders at the bottom, so
+                          // offset 0 IS the newest message — a freshly
+                          // opened chat sits on the latest turn by
+                          // construction, and prepended history never
+                          // shifts the viewport.
                           return ListView.builder(
                             controller: _scrollController,
+                            reverse: true,
                             padding:
                                 const EdgeInsets.fromLTRB(14, 14, 14, 8),
                             itemCount: itemCount,
                             itemBuilder: (context, index) {
-                              if (state.canLoadOlder && index == 0) {
+                              if (state.canLoadOlder &&
+                                  index == itemCount - 1) {
                                 return Center(
                                   child: TextButton.icon(
                                     onPressed: _loadingOlder
@@ -735,8 +739,7 @@ class _ChatPageState extends State<ChatPage> {
                                   ),
                                 );
                               }
-                              final group = groups[
-                                  index - (state.canLoadOlder ? 1 : 0)];
+                              final group = groups[groups.length - 1 - index];
                               return _TurnGroupWidget(
                                 rows: group,
                                 transport: _transport,

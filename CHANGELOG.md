@@ -2,6 +2,12 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.5.1] - 2026-08-19
+
+### Fixed
+- 打开任务现在定位在最新消息：消息列表改为 reverse 布局（偏移 0 即最新一条），打开时天然处于底部，不再依赖"打开后补一次滚动"的时序（原实现在初始快照与自动加载历史交错时会停在最早消息）。
+- 依赖置换：`flutter_markdown` → `flutter_markdown_plus`（上游停止维护的接续版），`flutter_lints` 6。
+
 ## [0.5.0] - 2026-08-19
 
 ### Added
