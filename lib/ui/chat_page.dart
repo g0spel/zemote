@@ -235,7 +235,6 @@ class _ChatPageState extends State<ChatPage> {
       final picked = <_PendingFile>[];
       for (final file in files) {
         final bytes = await file.readAsBytes();
-        if (bytes == null) continue;
         picked.add(_PendingFile(file.name, _guessMime(file.name), bytes));
       }
       if (picked.isEmpty) return;

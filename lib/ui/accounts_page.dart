@@ -90,7 +90,6 @@ class _AccountsPageState extends State<AccountsPage> {
       );
       if (files.isEmpty) return;
       final bytes = await files.first.readAsBytes();
-      if (bytes == null) return;
       final count = await widget.store.importJson(utf8.decode(bytes));
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
