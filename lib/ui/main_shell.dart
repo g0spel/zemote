@@ -11,6 +11,7 @@ import '../state/app_session.dart';
 import 'chat_page.dart';
 import 'settings_page.dart';
 import 'task_home_page.dart';
+import 'automation_page.dart';
 import 'theme.dart';
 
 /// Mirrors `HC()` in the web client:
@@ -266,6 +267,8 @@ class _MainShellContentState extends State<_MainShellContent> {
       _taskNotifier = null;
       _bridge = null;
       _activeWorkspace = null;
+      // Tab indices shrink from 3 to 2: settings(2)→1, automation(1)→0.
+      _tab = _tab >= 2 ? 1 : 0;
     });
   }
 
@@ -328,6 +331,15 @@ class _MainShellContentState extends State<_MainShellContent> {
                           workspaces: _workspaces,
                           onSwitchWorkspace: _closeBridge,
                         ),
+                  // Automations tab exists only while a workspace is open.
+                  1 when bridge != null => AutomationPage(
+                      key: ValueKey(
+                          'auto-${workspaceKeyOf(_activeWorkspace ?? const {})}'),
+                      bridge: bridge,
+                      workspace: _activeWorkspace!,
+                      onOpenTask: (taskId, title) =>
+                          _openTaskChat(bridge, taskId, title),
+                    ),
                   _ => SettingsPage(
                       client: widget.client,
                       bridge: bridge,
@@ -346,18 +358,46 @@ class _MainShellContentState extends State<_MainShellContent> {
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tab,
         onDestinationSelected: (i) => setState(() => _tab = i),
-        destinations: const [
-          NavigationDestination(
+        destinations: [
+          const NavigationDestination(
             icon: Icon(Icons.forum_outlined),
             selectedIcon: Icon(Icons.forum),
             label: '任务',
           ),
-          NavigationDestination(
+          if (bridge != null)
+            const NavigationDestination(
+              icon: Icon(Icons.schedule_outlined),
+              selectedIcon: Icon(Icons.schedule),
+              label: '自动化',
+            ),
+          const NavigationDestination(
             icon: Icon(Icons.settings_outlined),
             selectedIcon: Icon(Icons.settings),
             label: '设置',
           ),
         ],
+      ),
+    );
+  }
+
+  /// Opens a task chat pushed on top of the shell (automation run history).
+  void _openTaskChat(BridgeSession bridge, String taskId, String title) {
+    final workspace = _activeWorkspace;
+    if (workspace == null) return;
+    final scope = <String, dynamic>{
+      'workspacePath': workspace['workspacePath'],
+      if (workspace['workspaceIdentity'] != null)
+        'workspaceIdentity': workspace['workspaceIdentity'],
+    };
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ChatPage(
+          session: bridge,
+          scope: scope,
+          workspaceKey: workspaceKeyOf(workspace) ?? '',
+          sessionId: taskId,
+          title: title,
+        ),
       ),
     );
   }

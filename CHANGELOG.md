@@ -2,6 +2,17 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.8.0] - 2026-08-19
+
+### Added
+- **自动化标签页**（底部导航"任务"与"设置"之间，仅进入工作区后出现）：对接 ZCode 定时任务功能。接口面经真实设备 create→开关→改名→删除 全循环探测验证（`zcode-agent` 通道）。
+  - 列表：标题、Cron、下次/已运行次数、最近结果徽标、启停开关（`setAutomationEnabled`）；
+  - 详情：完整提示词、模型/模式信息、执行历史（时间/触发/结果，成功记录可跳转对应会话）；
+  - 新建/编辑：表单（标题 + Cron + 提示词），内置官方模板（每周回顾/晨会动态/风险扫描）；
+  - 删除：带确认；
+  - 闲时任务队列区块（`off-peak-task.list`，只读）。
+- 探测工具：`test/offpeak_probe_test.dart` 与 `test/automation_cycle_test.dart`（环境变量注入凭据、无凭据自动跳过，循环测试自建自删）。
+
 ## [0.7.2] - 2026-08-19
 
 ### Fixed
