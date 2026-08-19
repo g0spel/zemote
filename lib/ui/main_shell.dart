@@ -152,10 +152,17 @@ class _MainShellContentState extends State<_MainShellContent> {
   bool _bridgeOpening = false;
   StreamSubscription? _updatedSub;
   TaskNotifier? _taskNotifier;
+  AppLifecycleListener? _lifecycle;
 
   @override
   void initState() {
     super.initState();
+    // Coming back from background: timers were frozen — probe the relay now
+    // instead of waiting for the next heartbeat tick to notice a dead
+    // socket (shortens the user-visible disconnect window).
+    _lifecycle = AppLifecycleListener(
+      onResume: () => widget.client.pokeRelay(),
+    );
     _updatedSub = widget.client.workspaceListUpdated.listen((result) {
       if (!mounted || result is! Map) return;
       final list = result['workspaces'];
@@ -166,6 +173,7 @@ class _MainShellContentState extends State<_MainShellContent> {
 
   @override
   void dispose() {
+    _lifecycle?.dispose();
     _updatedSub?.cancel();
     _taskNotifier?.dispose();
     _bridge?.dispose();

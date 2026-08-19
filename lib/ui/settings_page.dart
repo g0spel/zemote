@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
+import '../protocol/relay_client.dart';
 import '../protocol/zemote_client.dart';
 import '../state/crash_report.dart';
 import '../update/app_version.dart';
@@ -177,6 +179,8 @@ class SettingsPage extends StatelessWidget {
                 onTap: () => Navigator.of(context).push(
                     MaterialPageRoute(builder: (_) => const LogPage())),
               ),
+              const Divider(indent: 52),
+              const _VerboseFramesTile(),
               if (client != null) ...[
                 const Divider(indent: 52),
                 ListTile(
@@ -326,6 +330,39 @@ class SettingsPage extends StatelessWidget {
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text('检查更新失败: $e')));
     }
+  }
+}
+
+/// Toggles per-frame relay logging ([RelayClient.verboseFrames]). Off by
+/// default in release: every inbound frame costs a jsonEncode + truncation,
+/// which is real CPU during streaming. Diagnostics always log regardless.
+class _VerboseFramesTile extends StatefulWidget {
+  const _VerboseFramesTile();
+
+  @override
+  State<_VerboseFramesTile> createState() => _VerboseFramesTileState();
+}
+
+class _VerboseFramesTileState extends State<_VerboseFramesTile> {
+  late bool _value = RelayClient.verboseFrames;
+
+  @override
+  Widget build(BuildContext context) {
+    return SwitchListTile(
+      secondary: const Icon(Icons.article_outlined, size: 20),
+      title: const Text('协议帧日志（详细）'),
+      subtitle: const Text('逐帧记录收发原文；流式期间有性能开销，排查协议时开启',
+          style: TextStyle(fontSize: 12)),
+      value: _value,
+      onChanged: (v) async {
+        setState(() => _value = v);
+        RelayClient.verboseFrames = v;
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setBool('relayVerboseFrames', v);
+        } catch (_) {}
+      },
+    );
   }
 }
 

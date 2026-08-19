@@ -3,7 +3,9 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
+import 'protocol/relay_client.dart';
 import 'state/account_store.dart';
 import 'state/app_session.dart';
 import 'state/crash_report.dart';
@@ -19,6 +21,15 @@ final navigatorKey = GlobalKey<NavigatorState>();
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Verbose per-frame relay logging: debug default, release reads the
+  // toggle persisted by 设置 → 协议帧日志（详细）.
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    RelayClient.verboseFrames =
+        prefs.getBool('relayVerboseFrames') ?? kDebugMode;
+  } catch (_) {
+    RelayClient.verboseFrames = kDebugMode;
+  }
   // Crash evidence: persist the last framework/uncaught error so it
   // survives the process and can be inspected on the next launch.
   if (!kIsWeb) {

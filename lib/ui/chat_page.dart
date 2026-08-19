@@ -43,6 +43,20 @@ class _PendingFile {
   _PendingFile(this.fileName, this.mime, this.bytes);
 }
 
+/// Drops echoes whose text already exists as a real userInput row (the
+/// server-confirmed copy has arrived). Pure for tests.
+List<Map<String, dynamic>> removeEchoedTexts(
+    List<Map<String, dynamic>> echoes, List<Map<String, dynamic>> rows) {
+  if (echoes.isEmpty) return echoes;
+  final confirmed = <String>{
+    for (final r in rows)
+      if (r['kind'] == 'userInput') '${r['text'] ?? ''}'.trim(),
+  };
+  return echoes
+      .where((e) => !confirmed.contains('${e['text']}'.trim()))
+      .toList();
+}
+
 class _ChatPageState extends State<ChatPage> {
   late final ConversationTransport _transport;
   ConversationSubscription? _subscription;
@@ -51,6 +65,27 @@ class _ChatPageState extends State<ChatPage> {
   String? _sessionId;
   String? _error;
   bool _sending = false;
+
+  /// Optimistic echoes for just-sent messages: shown immediately on send,
+  /// removed once the server's userInput row arrives (see
+  /// [removeEchoedTexts]). Never enters protocol rows/revisions.
+  final List<Map<String, dynamic>> _echoes = [];
+
+  void _addEcho(String text) {
+    setState(() => _echoes.add({'text': text, 'ts': DateTime.now().millisecondsSinceEpoch}));
+    _scrollToBottom();
+  }
+
+  void _dedupeEchoes() {
+    final state = _state;
+    if (state == null || _echoes.isEmpty) return;
+    final kept = removeEchoedTexts(_echoes, state.rows);
+    if (kept.length != _echoes.length) {
+      setState(() => _echoes
+        ..clear()
+        ..addAll(kept));
+    }
+  }
   bool _loadingOlder = false;
   bool _showSlash = false;
   String? _progress;
@@ -139,6 +174,7 @@ class _ChatPageState extends State<ChatPage> {
       // (offset 0 = bottom); the listener below only follows NEW deltas
       // while the user stays pinned near the bottom.
       sub.state.addListener(_scrollToBottom);
+      sub.state.addListener(_dedupeEchoes);
       // The server snapshot is a tail window (can be as few as 3 rows).
       // The official client shows the full history immediately, so
       // auto-load the missing older rows once on open.
@@ -336,6 +372,7 @@ class _ChatPageState extends State<ChatPage> {
         if (canUseFirstInput) {
           // Message already sent with the session; just display history.
           _inputController.clear();
+          _addEcho(text);
           setState(() => _pendingFiles.clear());
           _subscribe();
           return;
@@ -374,6 +411,7 @@ class _ChatPageState extends State<ChatPage> {
         return;
       }
       _inputController.clear();
+      _addEcho(text);
       setState(() => _pendingFiles.clear());
     } catch (e) {
       _toast('发送失败: $e');
@@ -707,9 +745,15 @@ class _ChatPageState extends State<ChatPage> {
                         animation: state,
                         builder: (context, _) {
                           final groups = _groupRows(state.rows);
+                          // Optimistic echoes render newest-first at the
+                          // bottom (reverse index 0..n-1).
+                          final echoCount = _echoes.length;
                           final itemCount = groups.length +
+                              echoCount +
                               (state.canLoadOlder ? 1 : 0);
-                          if (groups.isEmpty && !state.canLoadOlder) {
+                          if (groups.isEmpty &&
+                              echoCount == 0 &&
+                              !state.canLoadOlder) {
                             return Center(
                                 child: Text('暂无消息',
                                     style:
@@ -727,8 +771,46 @@ class _ChatPageState extends State<ChatPage> {
                                 const EdgeInsets.fromLTRB(14, 14, 14, 8),
                             itemCount: itemCount,
                             itemBuilder: (context, index) {
-                              if (state.canLoadOlder &&
-                                  index == itemCount - 1) {
+                              if (index < echoCount) {
+                                final e =
+                                    _echoes[echoCount - 1 - index];
+                                return Align(
+                                  alignment: Alignment.centerRight,
+                                  child: Container(
+                                    margin: const EdgeInsets.symmetric(
+                                        vertical: 4),
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 12, vertical: 8),
+                                    constraints: BoxConstraints(
+                                        maxWidth:
+                                            MediaQuery.of(context).size.width *
+                                                0.8),
+                                    decoration: BoxDecoration(
+                                      color: ZColors.primary
+                                          .withValues(alpha: 0.10),
+                                      borderRadius:
+                                          BorderRadius.circular(12),
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.end,
+                                      children: [
+                                        Text('${e['text']}',
+                                            style: const TextStyle(
+                                                fontSize: 13,
+                                                height: 1.4)),
+                                        const SizedBox(height: 2),
+                                        Text('发送中…',
+                                            style: TextStyle(
+                                                fontSize: 9,
+                                                color: ZInk.faint(context))),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              }
+                              final mi = index - echoCount;
+                              if (state.canLoadOlder && mi == groups.length) {
                                 return Center(
                                   child: TextButton.icon(
                                     onPressed: _loadingOlder
@@ -749,7 +831,7 @@ class _ChatPageState extends State<ChatPage> {
                                   ),
                                 );
                               }
-                              final group = groups[groups.length - 1 - index];
+                              final group = groups[groups.length - 1 - mi];
                               return _TurnGroupWidget(
                                 key: ValueKey(
                                     'g${group.first['rowId'] ?? group.length}'),

@@ -1283,6 +1283,25 @@ class ConversationState extends ChangeNotifier {
   int totalCount = 0;
   bool ready = false;
 
+  // Streaming bursts fire many small deltas per second; notifying the UI on
+  // each one burns the main thread on full-list rebuilds. Coalesce: at most
+  // one notify per 100ms, flushed on the timer (a trailing notify lands ≤
+  // 100ms after the last frame — imperceptible for chat streaming).
+  Timer? _notifyTimer;
+
+  void _scheduleNotify() {
+    _notifyTimer ??= Timer(const Duration(milliseconds: 100), () {
+      _notifyTimer = null;
+      notifyListeners();
+    });
+  }
+
+  @override
+  void dispose() {
+    _notifyTimer?.cancel();
+    super.dispose();
+  }
+
   void applyFrame(
     Map<String, dynamic> frame, {
     required void Function() onGap,
@@ -1309,7 +1328,7 @@ class ConversationState extends ChangeNotifier {
       seq = toSeq;
     }
     ready = true;
-    notifyListeners();
+    _scheduleNotify();
   }
 
   void _applySnapshot(Map<String, dynamic> snap, int toSeq) {
@@ -1431,7 +1450,7 @@ class ConversationState extends ChangeNotifier {
   void optimisticPatch(Map<String, dynamic> patch) {
     if (snapshot == null) return;
     snapshot = {...snapshot!, ...patch};
-    notifyListeners();
+    _scheduleNotify();
   }
 
   /// Optimistic row edit (e.g. feedback) — mutates the row in place and
@@ -1441,7 +1460,7 @@ class ConversationState extends ChangeNotifier {
         rows.indexWhere((r) => (r['rowId'] as num?)?.toInt() == rowId?.toInt());
     if (index == -1) return;
     rows[index] = {...rows[index], ...patch};
-    notifyListeners();
+    _scheduleNotify();
   }
 
   /// Optimistic queue removal (sendQueuedNow / deleteQueueItem accepted).
@@ -1455,7 +1474,7 @@ class ConversationState extends ChangeNotifier {
       ...snapshot!,
       'queue': {...q, 'items': items ?? []},
     };
-    notifyListeners();
+    _scheduleNotify();
   }
 
   /// Mirrors `dke()`: append streamed text to a row field.
@@ -1554,10 +1573,10 @@ class ConversationState extends ChangeNotifier {
       rows = [...fresh, ...rows];
       final firstFresh = (fresh.first['rowId'] as num?)?.toInt();
       firstRowId = newFirstRowId ?? firstFresh ?? firstRowId;
-      notifyListeners();
+      _scheduleNotify();
     } else if (newFirstRowId != null && newFirstRowId != firstRowId) {
       firstRowId = newFirstRowId;
-      notifyListeners();
+      _scheduleNotify();
     }
   }
 

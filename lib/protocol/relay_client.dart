@@ -78,6 +78,14 @@ class RelayClient {
   bool _intentionallyClosed = false;
   bool _disposed = false;
   int _reconnectAttempt = 0;
+  int _hbTick = 0;
+  bool _staleProbeSent = false;
+
+  /// Verbose per-frame relay logging (`[relay] << / >>` raw frames).
+  /// Costs a jsonEncode + truncation on EVERY inbound/outbound frame —
+  /// meaningful CPU during streaming — so it defaults off in release and is
+  /// toggleable from 设置. Diagnostics/errors always log.
+  static bool verboseFrames = false;
   DateTime _lastPairStatusAckAt = DateTime.now();
 
   Timer? _heartbeatTimer;
@@ -105,6 +113,10 @@ class RelayClient {
   Future<void> _connect() async {
     _socketSub?.cancel();
     _socket?.sink.close();
+    // Mirror the official client's reconnectNow(): a fresh socket starts a
+    // fresh liveness window, else the first tick after a reconnect sees a
+    // stale clock and immediately tears down again.
+    _lastPairStatusAckAt = DateTime.now();
     final uri = params.relayWsUri;
     _log('[relay] connecting $uri');
     WebSocketChannel socket;
@@ -144,7 +156,7 @@ class RelayClient {
   void _send(Map<String, dynamic> frame) {
     final socket = _socket;
     if (socket == null) return;
-    _log('[relay] >> ${jsonEncode(frame)}');
+    if (verboseFrames) _log('[relay] >> ${jsonEncode(frame)}');
     socket.sink.add(jsonEncode(frame));
   }
 
@@ -187,7 +199,7 @@ class RelayClient {
     Map<String, dynamic>? frame;
     try {
       final text = data is String ? data : utf8.decode(data as List<int>);
-      _log('[relay] << $text');
+      if (verboseFrames) _log('[relay] << $text');
       final decoded = jsonDecode(text);
       if (decoded is Map<String, dynamic> && decoded.containsKey('type')) {
         frame = decoded;
@@ -244,6 +256,7 @@ class RelayClient {
 
   void _applyPairStatus(String? status) {
     _lastPairStatusAckAt = DateTime.now();
+    _staleProbeSent = false;
     if (status == 'waiting') {
       if (_wasPaired) {
         _clearWaitingTimer();
@@ -312,11 +325,26 @@ class RelayClient {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = Timer.periodic(heartbeatInterval, (_) {
       if (state != RelayState.paired && state != RelayState.waiting) return;
+      // Halve the heartbeat while waiting (nothing is streaming; saves
+      // mobile radio wakeups).
+      _hbTick++;
+      if (state == RelayState.waiting && _hbTick.isOdd) return;
       if (DateTime.now().difference(_lastPairStatusAckAt) >
           heartbeatAckTimeout) {
-        _log('[relay] heartbeat ack timeout, reconnecting');
-        _reconnect();
-        return;
+        // Probe-before-drop: timer freezes (app switch / doze) and brief
+        // network stalls read as stale acks even on a live socket. Send one
+        // extra query and only tear down if the NEXT tick is still stale.
+        if (!_staleProbeSent) {
+          _staleProbeSent = true;
+          _log('[relay] heartbeat stale, probing before reconnect');
+        } else {
+          _staleProbeSent = false;
+          _log('[relay] heartbeat ack timeout, reconnecting');
+          _reconnect();
+          return;
+        }
+      } else {
+        _staleProbeSent = false;
       }
       _send({
         'type': 'pair_status_query',
@@ -324,6 +352,26 @@ class RelayClient {
         'client_ts': DateTime.now().millisecondsSinceEpoch,
       });
     });
+  }
+
+  /// App-resume liveness action: detect a dead socket immediately instead
+  /// of waiting for the next heartbeat tick (timers were frozen while the
+  /// app was backgrounded). Paired → probe now; mid-reconnect → retry
+  /// without waiting out the backoff.
+  void poke() {
+    if (_disposed || _intentionallyClosed) return;
+    if (state == RelayState.paired) {
+      _send({
+        'type': 'pair_status_query',
+        'device_sid': params.deviceSid,
+        'client_ts': DateTime.now().millisecondsSinceEpoch,
+      });
+    } else if (state == RelayState.reconnecting) {
+      _log('[relay] poke: retrying reconnect immediately');
+      _reconnectTimer?.cancel();
+      _reconnectTimer = null;
+      _connect();
+    }
   }
 
   void _stopHeartbeat() => _heartbeatTimer?.cancel();

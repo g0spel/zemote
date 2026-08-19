@@ -129,6 +129,10 @@ class ZemoteClient {
     }
   }
 
+  /// App-resume liveness action (see RelayClient.poke) — surfaced here so
+  /// the UI layer doesn't touch the relay directly.
+  void pokeRelay() => relay.poke();
+
   /// Waits until the relay reports `matched` (paired with the desktop).
   /// Fails fast with the relay's failure reason (credential/desktop/relay
   /// errors) instead of waiting out the full timeout.
