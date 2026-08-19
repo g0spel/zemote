@@ -1356,8 +1356,6 @@ class _RowWidget extends StatelessWidget {
       final changes = await transport.fileChanges(
         sessionId,
         target: {'rowId': header['rowId'], 'entityId': header['entityId']},
-        baseRevision: state.revision,
-        baseLogEpoch: state.logEpoch,
       );
       if (!context.mounted) return;
       showModalBottomSheet(
@@ -1653,6 +1651,7 @@ class _ReasoningTile extends StatelessWidget {
         border: Border.all(color: ZInk.tileBorder(context)),
       ),
       child: ExpansionTile(
+        initiallyExpanded: true,
         dense: true,
         tilePadding: const EdgeInsets.symmetric(horizontal: 12),
         title: Row(
@@ -2267,6 +2266,38 @@ List<Map<String, dynamic>>? parseInsightList(dynamic data, List<String> keys,
   return null;
 }
 
+/// Terminal statuses of an inline `subagent` row (host schema:
+/// `status: running|success|failed|cancelled`).
+const subagentTerminalStatuses = {'success', 'failed', 'cancelled'};
+
+/// Inline `subagent` rows that have FINISHED, in conversation order. The
+/// conversation snapshot's `subagents` block lists only RUNNING subagents
+/// plus a bare `endedTotal` count — the summary and terminal status of a
+/// finished subagent live solely in its inline row. Pure for tests.
+List<Map<String, dynamic>> endedSubagentRows(List<Map<String, dynamic>> rows) {
+  return rows
+      .where((r) =>
+          r['kind'] == 'subagent' &&
+          subagentTerminalStatuses.contains('${r['status']}'))
+      .toList();
+}
+
+/// The latest turnHeader of a COMPLETED turn (`state: completedSuccess`
+/// with a usable {rowId, entityId}) — the official client's armed target
+/// for file-changes loading. A still-running turn must not be queried: the
+/// server guard races the streaming revision and rejects it as stale.
+/// Pure for tests.
+Map<String, dynamic>? latestCompletedTurn(List<Map<String, dynamic>> rows) {
+  for (final r in rows.reversed) {
+    if (r['kind'] != 'turnHeader' || r['state'] != 'completedSuccess') {
+      continue;
+    }
+    if (r['rowId'] == null || r['entityId'] is! String) continue;
+    return r;
+  }
+  return null;
+}
+
 class _InsightsRow extends StatefulWidget {
   final ConversationState state;
   final ConversationTransport transport;
@@ -2291,39 +2322,73 @@ class _InsightsRowState extends State<_InsightsRow> {
   bool _filesLoading = false;
   String? _filesError;
 
+  /// Turn (rowId) whose file changes are already loaded — the armed
+  /// pattern mirrors the web client: each turn completing reloads once,
+  /// whether or not the panel is open, so opening it always shows the
+  /// latest turn's diff instantly.
+  String? _loadedTurnKey;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.state.addListener(_onStateChanged);
+  }
+
+  @override
+  void didUpdateWidget(_InsightsRow oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.state != widget.state) {
+      oldWidget.state.removeListener(_onStateChanged);
+      widget.state.addListener(_onStateChanged);
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.state.removeListener(_onStateChanged);
+    super.dispose();
+  }
+
+  void _onStateChanged() {
+    final turn = latestCompletedTurn(widget.state.rows);
+    final key = turn == null ? null : '${turn['rowId']}';
+    if (key == null || key == _loadedTurnKey) return;
+    _loadedTurnKey = key;
+    _loadFiles();
+  }
+
   void _toggle(int index) {
     setState(() => _open = _open == index ? null : index);
-    if (_open == _files && _fileChanges == null && _filesError == null) {
+    // Skip when a prefetch for this turn is already in flight.
+    if (_open == _files &&
+        !_filesLoading &&
+        _fileChanges == null &&
+        _filesError == null) {
       _loadFiles();
     }
   }
 
-  /// File changes are turn-scoped: the target must be a `turnHeader` row
-  /// (see the desktop guard: any other kind is rejected with
-  /// `guard.actionUnavailable`) and the call requires baseRevision +
-  /// baseLogEpoch (Zod-validated).
+  /// File changes are turn-scoped: the target must be the turnHeader of a
+  /// COMPLETED turn (the running turn's guard races the streaming
+  /// revision). baseRevision/baseLogEpoch are read inside the transport.
   Future<void> _loadFiles() async {
-    final headers = widget.state.rows
-        .where((r) =>
-            r['kind'] == 'turnHeader' &&
-            r['rowId'] != null &&
-            r['entityId'] is String)
-        .toList();
-    if (headers.isEmpty) {
+    final target = latestCompletedTurn(widget.state.rows);
+    if (target == null) {
       setState(() => _fileChanges = null);
       return;
     }
-    final last = headers.last;
     setState(() {
       _filesLoading = true;
       _filesError = null;
     });
+    // Fire-once per turn (armed): mark before awaiting so a failed load
+    // doesn't retrigger on every streaming state notification — the
+    // manual refresh stays available for retries.
+    _loadedTurnKey = '${target['rowId']}';
     try {
       final res = await widget.transport.fileChanges(
         widget.sessionId,
-        target: {'rowId': last['rowId'], 'entityId': last['entityId']},
-        baseRevision: widget.state.revision,
-        baseLogEpoch: widget.state.logEpoch,
+        target: {'rowId': target['rowId'], 'entityId': target['entityId']},
       );
       if (!mounted) return;
       setState(() => _fileChanges = res);
@@ -2848,23 +2913,86 @@ class _InsightsRowState extends State<_InsightsRow> {
     );
   }
 
+  /// Inline `subagent` row (host schema): {subagentType, status:
+  /// running|success|failed|cancelled, summaryText, startedAt?(ms),
+  /// endedAt?(ms)}. Terminal rows back the finished-subagent list; running
+  /// rows back the fallback stream (no snapshot `subagents` field).
+  Widget _subagentRowTile(BuildContext context, Map<String, dynamic> r) {
+    final status = '${r['status']}';
+    final (leading, suffix) = switch (status) {
+      'success' => (
+        const Icon(Icons.check_circle_outline,
+            size: 13, color: ZColors.success),
+        ' · 已完成'
+      ),
+      'failed' => (
+        const Icon(Icons.error_outline, size: 13, color: ZColors.danger),
+        ' · 失败'
+      ),
+      'cancelled' => (
+        const Icon(Icons.block, size: 13, color: ZColors.warning),
+        ' · 已取消'
+      ),
+      _ => (
+        const SizedBox(
+            width: 12,
+            height: 12,
+            child: CircularProgressIndicator(strokeWidth: 1.5)),
+        ''
+      ),
+    };
+    final summary = '${r['summaryText'] ?? ''}'.trim();
+    final endedAt = r['endedAt'];
+    final startedAt = r['startedAt'];
+    final time = endedAt != null
+        ? ' · ${_fmtMs(endedAt as num?)} 结束'
+        : startedAt != null
+            ? ' · ${_fmtMs(startedAt as num?)} 开始'
+            : '';
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          leading,
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              '${summary.isEmpty ? '子代理 · ${r['subagentType'] ?? ''}' : summary}'
+              '$suffix$time',
+              style: TextStyle(fontSize: 11, color: ZInk.soft(context)),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _bgPanel(BuildContext context) {
     final works = widget.state.backgroundWorks;
-    // Authoritative subagent status lives in snapshot.subagents
-    // {revision, childSessionIds, running[], endedTotal}; inline
-    // subagent ROWS are only a fallback for streams without the field.
+    // Authoritative RUNNING subagent status lives in snapshot.subagents
+    // {revision, childSessionIds, running[], endedTotal}; the snapshot never
+    // lists finished subagents — their summary + terminal status live in
+    // inline `subagent` rows (endedTotal only counts them). Inline running
+    // rows are used only by streams without the snapshot field.
     final subsObj = widget.state.snapshot?['subagents'];
     final subs = subsObj is Map ? subsObj.cast<String, dynamic>() : null;
     final runningSubs =
         subs == null ? null : parseInsightList(subs['running'], const []);
     final endedTotal = (subs?['endedTotal'] as num?)?.toInt() ?? 0;
-    final subRows = subs == null
-        ? widget.state.rows.where((r) => r['kind'] == 'subagent').toList()
+    final endedRows = endedSubagentRows(widget.state.rows);
+    final fallbackRunningRows = subs == null
+        ? widget.state.rows
+            .where((r) => r['kind'] == 'subagent' && '${r['status']}' == 'running')
+            .toList()
         : const <Map<String, dynamic>>[];
 
     if (works.isEmpty &&
         (runningSubs == null || runningSubs.isEmpty) &&
-        subRows.isEmpty &&
+        fallbackRunningRows.isEmpty &&
+        endedRows.isEmpty &&
         endedTotal == 0) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -2888,41 +3016,42 @@ class _InsightsRowState extends State<_InsightsRow> {
             shrinkWrap: true,
             children: [
               for (final w in works) _workTile(context, w),
-              if (runningSubs != null && runningSubs.isNotEmpty) ...[
+              if ((runningSubs?.isNotEmpty ?? false) ||
+                  fallbackRunningRows.isNotEmpty) ...[
                 Padding(
                   padding: const EdgeInsets.only(top: 4, bottom: 2),
                   child: Text('运行中的子代理',
                       style: TextStyle(
                           fontSize: 10.5, color: ZInk.faint(context))),
                 ),
-                for (final s in runningSubs) _subagentTile(context, s),
+                if (runningSubs != null)
+                  for (final s in runningSubs) _subagentTile(context, s),
+                for (final r in fallbackRunningRows)
+                  _subagentRowTile(context, r),
               ],
-              if (endedTotal > 0)
+              if (endedRows.isNotEmpty) ...[
+                Padding(
+                  padding: const EdgeInsets.only(top: 4, bottom: 2),
+                  child: Text('已结束的子代理',
+                      style: TextStyle(
+                          fontSize: 10.5, color: ZInk.faint(context))),
+                ),
+                for (final r in endedRows) _subagentRowTile(context, r),
+                // Rows outside the loaded window aren't available — the
+                // snapshot count keeps the total honest.
+                if (endedTotal > endedRows.length)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text('以及更早的 ${endedTotal - endedRows.length} 个子代理',
+                        style: TextStyle(
+                            fontSize: 10.5, color: ZInk.faint(context))),
+                  ),
+              ] else if (endedTotal > 0)
                 Padding(
                   padding: const EdgeInsets.only(top: 4),
                   child: Text('已结束 $endedTotal 个子代理',
                       style: TextStyle(
                           fontSize: 10.5, color: ZInk.faint(context))),
-                ),
-              for (final r in subRows)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 3),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.smart_toy_outlined,
-                          size: 13, color: Colors.deepPurpleAccent),
-                      const SizedBox(width: 6),
-                      Expanded(
-                        child: Text(
-                          '子代理 · ${r['subagentType'] ?? ''}'
-                          '${r['status'] != null && '${r['status']}'.isNotEmpty ? ' · ${r['status']}' : ''}'
-                          '${r['summaryText'] != null && '${r['summaryText']}'.isNotEmpty ? '\n${r['summaryText']}' : ''}',
-                          style: TextStyle(
-                              fontSize: 11, color: ZInk.soft(context)),
-                        ),
-                      ),
-                    ],
-                  ),
                 ),
             ],
           ),

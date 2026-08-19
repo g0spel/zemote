@@ -117,8 +117,10 @@ void main() {
         }
 
         if (!filesFound) {
-          // Guard contract (from the desktop host): target must be a
-          // turnHeader row {rowId, entityId} + baseRevision + baseLogEpoch.
+          // Guard contract (from the desktop host): target must be the
+          // turnHeader of a COMPLETED turn {rowId, entityId};
+          // baseRevision/baseLogEpoch are read from the live subscription
+          // inside the transport (with stale-recovery retry).
           Map<String, dynamic>? header;
           for (final r in conv.state.rows) {
             if (r['kind'] == 'turnHeader' &&
@@ -135,8 +137,6 @@ void main() {
                   'rowId': header['rowId'],
                   'entityId': header['entityId'],
                 },
-                baseRevision: conv.state.revision,
-                baseLogEpoch: conv.state.logEpoch,
               );
               // ignore: avoid_print
               print('---- fileChanges[turnHeader+rev+epoch] OK ----\n${enc(res, 3500)}');

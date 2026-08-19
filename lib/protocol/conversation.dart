@@ -452,22 +452,92 @@ class ConversationTransport {
     ]);
   }
 
+  /// File-changes query. baseRevision/baseLogEpoch are read from the live
+  /// subscription internally: the server guard requires them to EXACTLY
+  /// match the publisher snapshot, so callers must not cache a value.
   Future<dynamic> fileChanges(
     String sessionId, {
     required Map<String, dynamic> target,
-    int? baseRevision,
-    String? baseLogEpoch,
   }) async {
     await handshake();
-    return _channels.call(channel, 'conversationFileChangesV4', [
-      {
-        ...scope,
-        'sessionId': sessionId,
-        'target': target,
-        if (baseRevision != null) 'baseRevision': baseRevision,
-        if (baseLogEpoch != null) 'baseLogEpoch': baseLogEpoch,
-      },
-    ]);
+    return _fileQueryWithStaleRecovery(
+        sessionId, 'conversationFileChangesV4', target);
+  }
+
+  /// The fileChanges guard rejects any request whose baseRevision/
+  /// baseLogEpoch don't equal the live publisher snapshot
+  /// (`proto.staleRevision` / `proto.staleLogEpoch`), and streaming bumps
+  /// the revision between our read and the server's check. Mirrors the web
+  /// client: treat proto.stale* as retryable — wait for the next
+  /// state.updated {revision} to land (a streaming race self-heals within
+  /// moments), or force a snapshot resync when nothing advances (logEpoch
+  /// drift after a publisher rebuild), then retry once with fresh values.
+  Future<dynamic> _fileQueryWithStaleRecovery(
+    String sessionId,
+    String method,
+    Map<String, dynamic> target,
+  ) async {
+    final sub = _subscriptions[sessionId];
+    Future<dynamic> call() => _channels.call(channel, method, [
+          {
+            ...scope,
+            'sessionId': sessionId,
+            'target': target,
+            'baseRevision': sub?.state.revision ?? 0,
+            if (sub?.state.logEpoch != null)
+              'baseLogEpoch': sub!.state.logEpoch,
+          },
+        ]);
+    try {
+      return await call();
+    } catch (e) {
+      if (!isStaleConversationError(e) || sub == null) rethrow;
+      final revision = sub.state.revision;
+      final logEpoch = sub.state.logEpoch;
+      _log('[v4] $method stale ($e), waiting for state to advance');
+      var advanced = await _waitForStateAdvance(
+          sub, revision, logEpoch, const Duration(milliseconds: 2500));
+      if (!advanced) {
+        unawaited(sub._resync());
+        advanced = await _waitForStateAdvance(
+            sub, revision, logEpoch, const Duration(seconds: 5));
+      }
+      if (!advanced) rethrow;
+      _log('[v4] $method retrying at revision ${sub.state.revision}');
+      return await call();
+    }
+  }
+
+  /// Resolves true as soon as the subscription state moves past
+  /// [revision]/[logEpoch] (checked eagerly first — the frame may already
+  /// have landed), false on timeout.
+  Future<bool> _waitForStateAdvance(
+    ConversationSubscription sub,
+    int revision,
+    String? logEpoch,
+    Duration timeout,
+  ) async {
+    if (sub.state.revision != revision || sub.state.logEpoch != logEpoch) {
+      return true;
+    }
+    final done = Completer<bool>();
+    void onChanged() {
+      if (sub.state.revision != revision ||
+          sub.state.logEpoch != logEpoch) {
+        if (!done.isCompleted) done.complete(true);
+      }
+    }
+
+    sub.state.addListener(onChanged);
+    final timer = Timer(timeout, () {
+      if (!done.isCompleted) done.complete(false);
+    });
+    try {
+      return await done.future;
+    } finally {
+      timer.cancel();
+      sub.state.removeListener(onChanged);
+    }
   }
 
   Future<dynamic> fileRewindPreview(
@@ -1609,3 +1679,11 @@ class ConversationState extends ChangeNotifier {
         .toList();
   }
 }
+
+/// The conversation V4 query guards (fileChanges / fileRewindPreview) throw
+/// these when baseRevision/baseLogEpoch lag the live publisher snapshot —
+/// expected while streaming, always worth one retry after resyncing.
+/// Mirrors the web client's retryable-stale set.
+bool isStaleConversationError(Object e) =>
+    e is ChannelRpcError &&
+    ('${e.message}${e.data ?? ''}').contains('proto.stale');

@@ -2,6 +2,20 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.9.3] - 2026-08-19
+
+### Added
+- **后台面板"已结束的子代理"改为列表**：原先只显示"已结束 N 个子代理"汇总行。协议快照只提供运行列表和计数（宿主 Zod schema 佐证），已结束子代理的摘要与终态仅存在于会话行内——现在按行内终态行（`success/failed/cancelled`）渲染列表（摘要 + 已完成/失败/已取消徽标 + 结束时间），早于加载窗口的仍以"以及更早的 N 个"尾注保底；无快照字段的旧流降级路径同样获得中文状态徽标。
+
+### Fixed
+- **文件面板不显示 diff（含手动刷新失败）**：桌面端 4.0.23 的 `conversationFileChangesV4` guard 要求 `baseRevision`/`baseLogEpoch` 与实时快照精确相等（`proto.staleRevision`/`proto.staleLogEpoch`），流式期间几乎必拒，且旧实现无恢复手段。对齐官方 web 客户端模式修复：
+  - 查询目标改为**最近完成的回合**（此前取最后一个 turnHeader——运行中会话里即当前 running 回合，必然撞竞态）；
+  - 协议层遇 `proto.stale*` 自动恢复重试一次：先等下一帧 `state.updated {revision}` 落地（流式竞态自愈），2.5 秒无进展则强制 forceSnapshot resync（应对 logEpoch 漂移）；
+  - **每个回合完成后自动预加载**（面板开合无关，fire-once），打开面板即时显示最新回合 diff；预加载在途时打开面板不重复请求。
+
+### Changed
+- 对话流中的**思考内容默认展开**（可手动收起）。
+
 ## [0.9.2] - 2026-08-19
 
 ### Changed
