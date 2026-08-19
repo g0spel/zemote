@@ -9,6 +9,7 @@ import '../protocol/channel_client.dart';
 import '../protocol/conversation.dart';
 import '../protocol/zemote_client.dart';
 import '../state/log_store.dart';
+import 'delayed_banner.dart';
 import 'diff_view.dart';
 import 'markdown_view.dart';
 import 'theme.dart';
@@ -928,25 +929,30 @@ class _ReconnectBanner extends StatelessWidget {
     return ValueListenableBuilder<String?>(
       valueListenable: bridge.degraded,
       builder: (context, degraded, _) {
-        if (degraded == null) return const SizedBox.shrink();
-        return Container(
-          width: double.infinity,
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-          color: ZColors.warning.withValues(alpha: 0.15),
-          child: Row(
-            children: [
-              const SizedBox(
-                width: 12,
-                height: 12,
-                child: CircularProgressIndicator(strokeWidth: 1.5),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text('连接已断开，正在自动重连…',
-                    style: TextStyle(
-                        fontSize: 12, color: ZInk.soft(context))),
-              ),
-            ],
+        // Bridge hiccups that recover within 5s (lock/unlock resume, quick
+        // network flap) never surface.
+        return DelayedVisibility(
+          visible: degraded != null,
+          delay: const Duration(seconds: 5),
+          builder: (context) => Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+            color: ZColors.warning.withValues(alpha: 0.15),
+            child: Row(
+              children: [
+                const SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(strokeWidth: 1.5),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text('连接已断开，正在自动重连…',
+                      style: TextStyle(
+                          fontSize: 12, color: ZInk.soft(context))),
+                ),
+              ],
+            ),
           ),
         );
       },

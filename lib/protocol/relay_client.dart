@@ -88,6 +88,13 @@ class RelayClient {
   static bool verboseFrames = false;
   DateTime _lastPairStatusAckAt = DateTime.now();
 
+  /// Last time ANY inbound frame arrived. A healthy paired socket gets at
+  /// least heartbeat acks every 10s — zero inbound for >25s means the link
+  /// died while the app was frozen (locked screen / backgrounded), so the
+  /// resume poke can skip the probe dance and reconnect outright.
+  DateTime _lastInboundAt = DateTime.now();
+  static const _deadLinkThreshold = Duration(seconds: 25);
+
   Timer? _heartbeatTimer;
   Timer? _waitingTimer;
   Timer? _reconnectTimer;
@@ -117,6 +124,7 @@ class RelayClient {
     // fresh liveness window, else the first tick after a reconnect sees a
     // stale clock and immediately tears down again.
     _lastPairStatusAckAt = DateTime.now();
+    _lastInboundAt = DateTime.now();
     final uri = params.relayWsUri;
     _log('[relay] connecting $uri');
     WebSocketChannel socket;
@@ -196,6 +204,7 @@ class RelayClient {
   }
 
   void _handleRawMessage(dynamic data) {
+    _lastInboundAt = DateTime.now();
     Map<String, dynamic>? frame;
     try {
       final text = data is String ? data : utf8.decode(data as List<int>);
@@ -354,13 +363,21 @@ class RelayClient {
     });
   }
 
-  /// App-resume liveness action: detect a dead socket immediately instead
-  /// of waiting for the next heartbeat tick (timers were frozen while the
-  /// app was backgrounded). Paired → probe now; mid-reconnect → retry
-  /// without waiting out the backoff.
+  /// App-resume liveness action. Paired + fresh inbound traffic → probe
+  /// with a query; paired but ZERO inbound for >25s (the app was frozen
+  /// with the screen locked — the socket is dead even if the OS hasn't
+  /// delivered the close event yet) → reconnect NOW, skipping the
+  /// 20-second stale-probe dance; mid-reconnect → retry without backoff.
   void poke() {
     if (_disposed || _intentionallyClosed) return;
     if (state == RelayState.paired) {
+      if (DateTime.now().difference(_lastInboundAt) > _deadLinkThreshold) {
+        _log('[relay] poke: no inbound since '
+            '${_lastInboundAt.hour}:${_lastInboundAt.minute}, '
+            'reconnecting immediately');
+        _reconnect();
+        return;
+      }
       _send({
         'type': 'pair_status_query',
         'device_sid': params.deviceSid,

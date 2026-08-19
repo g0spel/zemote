@@ -9,6 +9,7 @@ import '../protocol/zemote_client.dart';
 import '../state/account_store.dart';
 import '../state/app_session.dart';
 import 'chat_page.dart';
+import 'delayed_banner.dart';
 import 'settings_page.dart';
 import 'task_home_page.dart';
 import 'automation_page.dart';
@@ -773,23 +774,37 @@ class _ConnectionBanner extends StatelessWidget {
           _ => (Colors.transparent, Icons.check, ''),
         };
         if (text.isEmpty) return const SizedBox.shrink();
-        return Container(
-          width: double.infinity,
-          color: color.withValues(alpha: 0.15),
-          padding:
-              const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-          child: Row(
-            children: [
-              Icon(icon, size: 14, color: color),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(text,
-                    style: TextStyle(fontSize: 12, color: color)),
-              ),
-            ],
-          ),
-        );
+        // Only errors surface instantly; a reconnect that heals within 5s
+        // (locked-screen resume, brief network flap) stays invisible.
+        final content = _bannerContent(context, color, icon, text);
+        if (state == RelayState.reconnecting) {
+          return DelayedVisibility(
+            visible: true,
+            delay: const Duration(seconds: 5),
+            builder: (context) => content,
+          );
+        }
+        return content;
       },
+    );
+  }
+
+  Widget _bannerContent(
+      BuildContext context, Color color, IconData icon, String text) {
+    return Container(
+      width: double.infinity,
+      color: color.withValues(alpha: 0.15),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      child: Row(
+        children: [
+          Icon(icon, size: 14, color: color),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(text,
+                style: TextStyle(fontSize: 12, color: color)),
+          ),
+        ],
+      ),
     );
   }
 }
