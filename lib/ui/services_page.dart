@@ -31,7 +31,7 @@ class _ServicesPageState extends State<ServicesPage>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(length: 2, vsync: this);
   }
 
   @override
@@ -49,8 +49,7 @@ class _ServicesPageState extends State<ServicesPage>
           controller: _tabController,
           tabs: const [
             Tab(text: '插件'),
-            Tab(text: '定时任务'),
-            Tab(text: 'MCP / Skills'),
+            Tab(text: '技能 / 命令'),
           ],
         ),
       ),
@@ -63,27 +62,227 @@ class _ServicesPageState extends State<ServicesPage>
               'listPlugins',
               [widget.scope],
             ),
+            enabledOf: (item) => item['enabled'] == true,
             titleOf: (item) =>
                 '${item['name'] ?? item['id'] ?? item['pluginId'] ?? ''}',
             subtitleOf: (item) => [
               '${item['version'] ?? ''}',
-              '${item['status'] ?? (item['enabled'] == true ? 'enabled' : '')}',
+              '${item['source'] ?? ''}',
             ].where((s) => s.isNotEmpty && s != 'null').join(' · '),
           ),
-          _ServiceList(
-            loader: () => widget.session.channels
-                .call(Channels.zcodeAgent, 'listAllAutomations', []),
-            titleOf: (item) =>
-                '${item['title'] ?? item['name'] ?? item['automationId'] ?? ''}',
-            subtitleOf: (item) => [
-              '${item['schedule'] ?? item['cron'] ?? ''}',
-              if (item['enabled'] != null)
-                item['enabled'] == true ? '已启用' : '已停用',
-            ].where((s) => s.isNotEmpty && s != 'null').join(' · '),
-          ),
-          const _McpSkillsHint(),
+          _SkillsTab(session: widget.session, scope: widget.scope),
         ],
       ),
+    );
+  }
+}
+
+/// Skills & commands (live data via `skills.list` / `commands.list`) plus an
+/// honest note on MCP: the remote protocol exposes NO MCP inventory reads
+/// (verified live — 15 candidate methods all "Method not found"); the
+/// desktop manages servers locally and only accepts sync writes.
+class _SkillsTab extends StatefulWidget {
+  final BridgeSession session;
+  final Map<String, dynamic> scope;
+
+  const _SkillsTab({required this.session, required this.scope});
+
+  @override
+  State<_SkillsTab> createState() => _SkillsTabState();
+}
+
+class _SkillsTabState extends State<_SkillsTab>
+    with AutomaticKeepAliveClientMixin {
+  List<Map<String, dynamic>> _skills = const [];
+  List<Map<String, dynamic>> _commands = const [];
+  bool _loading = true;
+  String? _error;
+
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  static List<Map<String, dynamic>> _mapsOf(dynamic res, String key) {
+    if (res is Map && res[key] is List) {
+      return [
+        for (final e in res[key] as List)
+          if (e is Map) e.cast<String, dynamic>(),
+      ];
+    }
+    return const [];
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final results = await Future.wait([
+        widget.session.channels
+            .call('skills', 'list', [widget.scope])
+            .timeout(const Duration(seconds: 15))
+            .catchError((Object _) => null),
+        widget.session.channels
+            .call('commands', 'list', [widget.scope])
+            .timeout(const Duration(seconds: 15))
+            .catchError((Object _) => null),
+      ]);
+      if (!mounted) return;
+      setState(() {
+        _skills = _mapsOf(results[0], 'skills');
+        _commands = _mapsOf(results[1], 'commands');
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = '$e';
+        _loading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_error != null) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('加载失败: $_error',
+                style: TextStyle(color: ZColors.danger, fontSize: 12)),
+            const SizedBox(height: 8),
+            OutlinedButton(onPressed: _load, child: const Text('重试')),
+          ],
+        ),
+      );
+    }
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          _sectionHeader('MCP 服务器'),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: ZInk.tile(context),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.extension_outlined,
+                    size: 16, color: ZInk.faint(context)),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '远程协议未提供 MCP 服务器读取接口（仅支持同步写入），请在桌面端 设置 → MCP 管理。',
+                    style:
+                        TextStyle(fontSize: 11.5, color: ZInk.soft(context)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+          _sectionHeader(
+              '技能 (${_skills.length} · 已启用 ${_skills.where((s) => s['enabled'] == true).length})'),
+          if (_skills.isEmpty)
+            Text('暂无技能',
+                style: TextStyle(fontSize: 11.5, color: ZInk.faint(context)))
+          else
+            for (final s in _skills)
+              Card(
+                margin: const EdgeInsets.only(bottom: 6),
+                child: ExpansionTile(
+                  tilePadding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                  dense: true,
+                  title: Row(
+                    children: [
+                      Expanded(
+                        child: Text('${s['name'] ?? s['id'] ?? '?'}',
+                            style: const TextStyle(
+                                fontSize: 13, fontWeight: FontWeight.w600)),
+                      ),
+                      _StatusPill(enabled: s['enabled'] == true),
+                    ],
+                  ),
+                  subtitle: Text(
+                    '${s['description'] ?? ''}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style:
+                        TextStyle(fontSize: 11, color: ZInk.faint(context)),
+                  ),
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          SelectableText(
+                            '${s['description'] ?? ''}',
+                            style:
+                                const TextStyle(fontSize: 11.5, height: 1.5),
+                          ),
+                          const SizedBox(height: 6),
+                          SelectableText(
+                            const JsonEncoder.withIndent('  ').convert(s),
+                            style: const TextStyle(
+                                fontFamily: 'monospace', fontSize: 9.5),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          const SizedBox(height: 14),
+          _sectionHeader('命令 (${_commands.length})'),
+          if (_commands.isEmpty)
+            Text('暂无自定义命令',
+                style: TextStyle(fontSize: 11.5, color: ZInk.faint(context)))
+          else
+            for (final c in _commands)
+              Card(
+                margin: const EdgeInsets.only(bottom: 6),
+                child: ExpansionTile(
+                  tilePadding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                  dense: true,
+                  title: Text('${c['name'] ?? '?'}',
+                      style: const TextStyle(
+                          fontSize: 13, fontWeight: FontWeight.w600)),
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                      child: SelectableText(
+                        '${c['prompt'] ?? ''}',
+                        style: const TextStyle(fontSize: 11, height: 1.5),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+        ],
+      ),
+    );
+  }
+
+  Widget _sectionHeader(String title) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Text(title,
+          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
     );
   }
 }
@@ -93,10 +292,14 @@ class _ServiceList extends StatefulWidget {
   final String Function(Map<String, dynamic>) titleOf;
   final String Function(Map<String, dynamic>) subtitleOf;
 
+  /// When set, each row shows a prominent 已启用/未启用 pill.
+  final bool Function(Map<String, dynamic>)? enabledOf;
+
   const _ServiceList({
     required this.loader,
     required this.titleOf,
     required this.subtitleOf,
+    this.enabledOf,
   });
 
   @override
@@ -221,10 +424,19 @@ class _ServiceListState extends State<_ServiceList>
         separatorBuilder: (_, __) => const SizedBox(height: 8),
         itemBuilder: (context, index) {
           final item = items[index];
+          final enabledOf = widget.enabledOf;
           return Card(
             child: ExpansionTile(
-              title: Text(widget.titleOf(item),
-                  style: const TextStyle(fontSize: 14)),
+              title: Row(
+                children: [
+                  Expanded(
+                    child: Text(widget.titleOf(item),
+                        style: const TextStyle(fontSize: 14)),
+                  ),
+                  if (enabledOf != null)
+                    _StatusPill(enabled: enabledOf(item)),
+                ],
+              ),
               subtitle: Text(widget.subtitleOf(item),
                   style: TextStyle(
                       fontSize: 11, color: ZInk.faint(context))),
@@ -246,27 +458,27 @@ class _ServiceListState extends State<_ServiceList>
   }
 }
 
-class _McpSkillsHint extends StatelessWidget {
-  const _McpSkillsHint();
+/// Prominent enabled/disabled pill (same visual language as the provider
+/// page badges).
+class _StatusPill extends StatelessWidget {
+  final bool enabled;
+
+  const _StatusPill({required this.enabled});
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.extension_outlined,
-                size: 40, color: ZInk.ghost(context)),
-            const SizedBox(height: 16),
-            Text(
-              'MCP 服务器与 Skills 由桌面端配置驱动。\n可在「设置 → Channel RPC 调试器」中选择\nmcp-sync / skills channel 查看与操作。',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: ZInk.faint(context), height: 1.7),
-            ),
-          ],
-        ),
+    final color = enabled ? ZColors.success : ZInk.faint(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(7),
+        border: Border.all(color: color.withValues(alpha: 0.5)),
+      ),
+      child: Text(
+        enabled ? '已启用' : '未启用',
+        style: TextStyle(
+            fontSize: 10, color: color, fontWeight: FontWeight.w600),
       ),
     );
   }

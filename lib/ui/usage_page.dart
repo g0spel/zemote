@@ -4,6 +4,55 @@ import '../protocol/zemote_client.dart';
 import 'theme.dart';
 
 /// Entitlement / quota usage page (usage-stats.getEntitlementSnapshot).
+///
+/// Field semantics (verified against the desktop client and a live
+/// snapshot):
+/// - `remaining`: MCP quota — `count` = remaining calls, `percentage` is a
+///   0–1 REMAINING ratio; the total lives on the TIME-LIMIT/unit-5 limit
+///   row (`usage` = total, `currentValue` = used).
+/// - TOKENS_LIMIT rows: `percentage` is the USED percent (0–100), so
+///   remaining = 100 − percentage. unit 3 = 5-hour window, unit 6 = weekly.
+/// - subscription `renewTime`/`expireTime` are ISO-8601 strings.
+
+/// The MCP quota limit row (duplicated by the top remaining card).
+bool isMcpQuotaLimit(Map<String, dynamic> limit) =>
+    limit['type'] == 'TIME_LIMIT' && limit['unit'] == 5;
+
+int? mcpQuotaTotal(List<dynamic> limits) {
+  for (final l in limits) {
+    if (l is Map && isMcpQuotaLimit(l.cast<String, dynamic>())) {
+      return (l['usage'] as num?)?.toInt();
+    }
+  }
+  return null;
+}
+
+String limitWindowLabel(Map<String, dynamic> limit) {
+  if (limit['type'] == 'TOKENS_LIMIT') {
+    if (limit['unit'] == 3) return '五小时剩余';
+    if (limit['unit'] == 6) return '每周剩余';
+    return '额度剩余';
+  }
+  return '${limit['type'] ?? ''} · unit ${limit['unit'] ?? '-'}';
+}
+
+/// TOKENS percentage = used% → remaining% = 100 − used.
+int? tokensRemainingPercent(Map<String, dynamic> limit) {
+  final used = (limit['percentage'] as num?)?.toDouble();
+  if (used == null) return null;
+  return (100 - used).round().clamp(0, 100);
+}
+
+/// Subscription times are ISO strings, not millis.
+String fmtIsoTime(Object? v) {
+  if (v is! String || v.trim().isEmpty) return '-';
+  final t = DateTime.tryParse(v.trim());
+  if (t == null) return v;
+  final local = t.toLocal();
+  String two(int n) => n.toString().padLeft(2, '0');
+  return '${local.year}-${two(local.month)}-${two(local.day)} '
+      '${two(local.hour)}:${two(local.minute)}';
+}
 class UsagePage extends StatefulWidget {
   final BridgeSession session;
 
@@ -88,6 +137,10 @@ class _UsagePageState extends State<UsagePage> {
     final remaining = data['remaining'];
     final subscription = data['subscription'];
     final quota = data['quota'];
+    final limits = quota is Map && quota['limits'] is List
+        ? quota['limits'] as List
+        : const [];
+    final mcpTotal = mcpQuotaTotal(limits);
 
     return RefreshIndicator(
       onRefresh: _load,
@@ -151,10 +204,12 @@ class _UsagePageState extends State<UsagePage> {
                       mainAxisAlignment:
                           MainAxisAlignment.spaceBetween,
                       children: [
-                        const Text('剩余额度',
+                        const Text('剩余 MCP 额度',
                             style: TextStyle(fontSize: 14)),
                         Text(
-                          '${remaining['count'] ?? '-'}',
+                          mcpTotal == null
+                              ? '${remaining['count'] ?? '-'}'
+                              : '${remaining['count'] ?? '-'} / $mcpTotal',
                           style: const TextStyle(
                               fontSize: 20,
                               fontWeight: FontWeight.w700,
@@ -166,9 +221,11 @@ class _UsagePageState extends State<UsagePage> {
                     ClipRRect(
                       borderRadius: BorderRadius.circular(4),
                       child: LinearProgressIndicator(
+                        // percentage here is a 0–1 REMAINING ratio.
                         value:
-                            ((remaining['percentage'] as num?) ?? 0) /
-                                100,
+                            ((remaining['percentage'] as num?) ?? 0)
+                                .toDouble()
+                                .clamp(0.0, 1.0),
                         minHeight: 6,
                         backgroundColor:
                             Colors.white.withValues(alpha: 0.08),
@@ -178,7 +235,8 @@ class _UsagePageState extends State<UsagePage> {
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      '剩余 ${remaining['percentage'] ?? '-'}% · 重置时间 ${_fmtTime(remaining['nextResetTime'])}',
+                      '剩余 ${((((remaining['percentage'] as num?) ?? 0) * 100)).round()}% · '
+                      '重置时间 ${_fmtTime(remaining['nextResetTime'])}',
                       style: TextStyle(
                           fontSize: 11, color: ZInk.faint(context)),
                     ),
@@ -186,7 +244,7 @@ class _UsagePageState extends State<UsagePage> {
                 ),
               ),
             ),
-          if (quota is Map && quota['limits'] is List) ...[
+          if (limits.isNotEmpty) ...[
             const SizedBox(height: 10),
             Card(
               child: Padding(
@@ -199,8 +257,10 @@ class _UsagePageState extends State<UsagePage> {
                             fontSize: 14,
                             fontWeight: FontWeight.w600)),
                     const SizedBox(height: 8),
-                    for (final limit in quota['limits'] as List)
-                      if (limit is Map)
+                    // The MCP quota row is covered by the top card.
+                    for (final limit in limits)
+                      if (limit is Map &&
+                          !isMcpQuotaLimit(limit.cast<String, dynamic>()))
                         _LimitRow(
                             limit: limit.cast<String, dynamic>(),
                             fmtTime: _fmtTime),
@@ -228,8 +288,8 @@ class _UsagePageState extends State<UsagePage> {
                       if (d is Map) ...[
                         _kv('产品', '${d['productName'] ?? '-'}'),
                         _kv('计费周期', '${d['billingCycle'] ?? '-'}'),
-                        _kv('续费时间', '${d['renewTime'] ?? '-'}'),
-                        _kv('到期时间', '${d['expireTime'] ?? '-'}'),
+                        _kv('续费时间', fmtIsoTime(d['renewTime'])),
+                        _kv('到期时间', fmtIsoTime(d['expireTime'])),
                       ],
                   ],
                 ),
@@ -269,9 +329,18 @@ class _LimitRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final type = '${limit['type'] ?? ''}';
+    final label = limitWindowLabel(limit);
+    // TOKENS percentage = used%; remaining = 100 − used.
+    final remaining = tokensRemainingPercent(limit);
     final percentage = (limit['percentage'] as num?)?.toDouble();
     final usageDetails = limit['usageDetails'];
+    final color = remaining == null
+        ? ZColors.primary
+        : remaining <= 10
+            ? ZColors.danger
+            : remaining <= 20
+                ? ZColors.warning
+                : ZColors.primary;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Column(
@@ -280,38 +349,28 @@ class _LimitRow extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                '$type · unit ${limit['unit'] ?? '-'}',
-                style: const TextStyle(fontSize: 12),
-              ),
+              Text(label, style: const TextStyle(fontSize: 12)),
               Text(
                 [
-                  if (limit['usage'] != null)
-                    '用量 ${limit['usage']}',
-                  if (limit['remaining'] != null)
-                    '剩余 ${limit['remaining']}',
-                  if (percentage != null) '$percentage%',
+                  if (remaining != null) '剩余 $remaining%',
+                  if (percentage != null) '已用 ${percentage.round()}%',
                 ].join(' · '),
-                style:
-                    TextStyle(fontSize: 11, color: ZInk.muted(context)),
+                style: TextStyle(
+                    fontSize: 11, color: ZInk.muted(context)),
               ),
             ],
           ),
-          if (percentage != null)
+          if (remaining != null)
             Padding(
               padding: const EdgeInsets.only(top: 4),
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(3),
                 child: LinearProgressIndicator(
-                  value: (percentage / 100).clamp(0.0, 1.0),
+                  value: (remaining / 100).clamp(0.0, 1.0),
                   minHeight: 4,
                   backgroundColor:
                       Colors.white.withValues(alpha: 0.08),
-                  valueColor: AlwaysStoppedAnimation(
-                    percentage > 80
-                        ? ZColors.warning
-                        : ZColors.primary,
-                  ),
+                  valueColor: AlwaysStoppedAnimation(color),
                 ),
               ),
             ),

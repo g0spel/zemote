@@ -5,7 +5,33 @@ import '../protocol/id.dart';
 import '../protocol/zemote_client.dart';
 import 'theme.dart';
 
-/// Model provider management (model-provider channel: getAll/save/delete).
+/// Provider status, aligned with the desktop client (verified live):
+/// custom providers carry NO `enabled` field and the official client still
+/// shows them as 已启用 — so only an explicit `enabled == false` or a
+/// `systemDisabledReason` means 已停用; a required-but-empty API key means
+/// 未配置; everything else (including enabled-absent customs) is 已启用.
+enum ProviderStatus { enabled, unconfigured, disabled }
+
+ProviderStatus providerStatusOf(Map<String, dynamic> p) {
+  if (p['systemDisabledReason'] is String) return ProviderStatus.disabled;
+  if (p['enabled'] == false) return ProviderStatus.disabled;
+  final apiKey = p['apiKey'];
+  if (p['apiKeyRequired'] == true &&
+      apiKey is String &&
+      apiKey.isEmpty) {
+    return ProviderStatus.unconfigured;
+  }
+  return ProviderStatus.enabled;
+}
+
+String providerDisabledReasonText(String raw) => switch (raw) {
+      'oauth_provider_inactive' => '登录已失效',
+      'coding_plan_not_entitled' => '无订阅资格',
+      'api_key_missing' => '未配置 API Key',
+      _ => raw,
+    };
+
+/// Model providers management (model-provider channel: getAll/save/delete).
 class ModelProvidersPage extends StatefulWidget {
   final BridgeSession session;
 
@@ -162,7 +188,8 @@ class _ModelProvidersPageState extends State<ModelProvidersPage> {
                         const SizedBox(height: 8),
                     itemBuilder: (context, index) {
                       final p = _providers[index];
-                      final enabled = p['enabled'] == true;
+                      final status = providerStatusOf(p);
+                      final active = status != ProviderStatus.disabled;
                       final endpoints = p['endpoints'];
                       final baseUrl = endpoints is Map
                           ? '${endpoints['baseURL'] ?? ''}'
@@ -171,58 +198,98 @@ class _ModelProvidersPageState extends State<ModelProvidersPage> {
                           p['models'] is List ? p['models'] as List : [];
                       final disabledReason =
                           p['systemDisabledReason'] as String?;
+                      final (statusLabel, statusColor) = switch (status) {
+                        ProviderStatus.enabled => ('已启用', ZColors.success),
+                        ProviderStatus.unconfigured => (
+                            '未配置',
+                            ZColors.warning
+                          ),
+                        ProviderStatus.disabled => ('已停用', ZColors.warning),
+                      };
                       return Card(
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 16, vertical: 10),
-                          child: Row(
+                        child: ExpansionTile(
+                          tilePadding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 4),
+                          title: Row(
                             children: [
                               Expanded(
+                                child: Text(
+                                  '${p['name'] ?? p['id']}',
+                                  style: const TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w600),
+                                ),
+                              ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: statusColor.withValues(alpha: 0.12),
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: Text(statusLabel,
+                                    style: TextStyle(
+                                        fontSize: 10, color: statusColor)),
+                              ),
+                            ],
+                          ),
+                          subtitle: Text(
+                            [
+                              '${p['apiFormat'] ?? ''}',
+                              if (models.isNotEmpty) '${models.length} 个模型',
+                              if (baseUrl.isNotEmpty) baseUrl,
+                              if (status == ProviderStatus.disabled &&
+                                  disabledReason != null)
+                                providerDisabledReasonText(disabledReason),
+                            ]
+                                .where((s) => s.isNotEmpty)
+                                .join(' · '),
+                            style: TextStyle(
+                                fontSize: 11, color: ZInk.faint(context)),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          children: [
+                            if (models.isEmpty)
+                              const Padding(
+                                padding: EdgeInsets.all(12),
+                                child: Text('（无模型）',
+                                    style: TextStyle(fontSize: 11)),
+                              )
+                            else
+                              Padding(
+                                padding: const EdgeInsets.fromLTRB(
+                                    16, 0, 16, 10),
                                 child: Column(
                                   crossAxisAlignment:
                                       CrossAxisAlignment.start,
                                   children: [
-                                    Text(
-                                      '${p['name'] ?? p['id']}',
-                                      style: const TextStyle(
-                                          fontSize: 14,
-                                          fontWeight: FontWeight.w600),
-                                    ),
-                                    const SizedBox(height: 3),
-                                    Text(
-                                      [
-                                        '${p['apiFormat'] ?? ''}',
-                                        if (models.isNotEmpty)
-                                          '${models.length} 个模型',
-                                        baseUrl,
-                                        if (!enabled &&
-                                            disabledReason != null)
-                                          '停用: $disabledReason',
-                                      ]
-                                          .where((s) => s.isNotEmpty)
-                                          .join(' · '),
-                                      style: TextStyle(
-                                          fontSize: 11,
-                                          color: ZInk.faint(context)),
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
+                                    for (final m
+                                        in models.whereType<Map>())
+                                      _modelLine(context, m),
                                   ],
                                 ),
                               ),
-                              Switch(
-                                value: enabled,
-                                onChanged: (v) => _toggle(p, v),
+                            Padding(
+                              padding:
+                                  const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.end,
+                                children: [
+                                  Switch(
+                                    value: active,
+                                    onChanged: (v) => _toggle(p, v),
+                                  ),
+                                  IconButton(
+                                    icon: Icon(Icons.delete_outline,
+                                        size: 18,
+                                        color: ZInk.faint(context)),
+                                    onPressed: () => _delete(p),
+                                  ),
+                                ],
                               ),
-                              IconButton(
-                                icon: Icon(
-                                    Icons.delete_outline,
-                                    size: 18,
-                                    color: ZInk.faint(context)),
-                                onPressed: () => _delete(p),
-                              ),
-                            ],
-                          ),
+                            ),
+                          ],
                         ),
                       );
                     },
@@ -370,4 +437,28 @@ class _AddProviderSheetState extends State<_AddProviderSheet> {
       ),
     );
   }
+}
+
+/// One model line inside a provider's expansion: id · context window ·
+/// max output · reasoning levels.
+Widget _modelLine(BuildContext context, Map<dynamic, dynamic> m) {
+  final id = '${m['id'] ?? m['name'] ?? '?'}';
+  final ctx = (m['contextWindow'] as num?)?.toInt();
+  final maxOut = (m['maxOutputTokens'] as num?)?.toInt();
+  final reasoning = m['reasoning'];
+  final levels = reasoning is Map ? reasoning['levels'] : null;
+  final levelNames = levels is Map ? levels.keys.toList().join('/') : '';
+  String k(int? v) => v == null ? '' : v >= 1000000 ? '${v ~/ 1000000}M' : '${(v / 1000).round()}k';
+  return Padding(
+    padding: const EdgeInsets.symmetric(vertical: 2),
+    child: Text(
+      [
+        id,
+        if (ctx != null) '上下文 ${k(ctx)}',
+        if (maxOut != null) '输出 ${k(maxOut)}',
+        if (levelNames.isNotEmpty) '推理 $levelNames',
+      ].join(' · '),
+      style: TextStyle(fontSize: 11, color: ZInk.soft(context)),
+    ),
+  );
 }
