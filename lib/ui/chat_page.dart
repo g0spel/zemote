@@ -684,6 +684,15 @@ class _ChatPageState extends State<ChatPage> {
               animation: state,
               builder: (context, _) => _ContextUsageBar(state: state),
             ),
+          if (state != null && _sessionId != null)
+            AnimatedBuilder(
+              animation: state,
+              builder: (context, _) => _InsightsRow(
+                state: state,
+                transport: _transport,
+                sessionId: _sessionId!,
+              ),
+            ),
           Expanded(
             child: state == null
                 ? Center(
@@ -2027,6 +2036,612 @@ class _ContextUsageBar extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Heuristic list extraction for insight panels: recognizes a direct list
+/// or `data[one of keys]` as a list of maps. Returns null when the shape is
+/// unrecognized (panels then fall back to a raw JSON view — data is never
+/// hidden just because the shape changed).
+List<Map<String, dynamic>>? parseInsightList(dynamic data, List<String> keys,
+    {bool allowEmpty = false}) {
+  dynamic list = data is List ? data : null;
+  if (data is Map) {
+    for (final k in keys) {
+      if (data[k] is List) {
+        list = data[k];
+        break;
+      }
+    }
+  }
+  if (list is List && list.every((e) => e is Map)) {
+    final mapped =
+        list.whereType<Map>().map((e) => e.cast<String, dynamic>()).toList();
+    if (mapped.isNotEmpty || allowEmpty) return mapped;
+  }
+  return null;
+}
+
+class _InsightsRow extends StatefulWidget {
+  final ConversationState state;
+  final ConversationTransport transport;
+  final String sessionId;
+
+  const _InsightsRow({
+    required this.state,
+    required this.transport,
+    required this.sessionId,
+  });
+
+  @override
+  State<_InsightsRow> createState() => _InsightsRowState();
+}
+
+class _InsightsRowState extends State<_InsightsRow> {
+  static const _todo = 0, _files = 1, _bg = 2;
+
+  int? _open;
+
+  dynamic _plans;
+  bool _plansLoading = false;
+  String? _plansError;
+
+  dynamic _fileChanges;
+  bool _filesLoading = false;
+  String? _filesError;
+
+  void _toggle(int index) {
+    setState(() => _open = _open == index ? null : index);
+    if (_open == _todo && _plans == null && _plansError == null) {
+      _loadPlans();
+    }
+    if (_open == _files && _fileChanges == null && _filesError == null) {
+      _loadFiles();
+    }
+  }
+
+  Future<void> _loadPlans() async {
+    setState(() {
+      _plansLoading = true;
+      _plansError = null;
+    });
+    try {
+      final plans = await widget.transport.plans(widget.sessionId);
+      if (!mounted) return;
+      setState(() => _plans = plans);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _plansError = '$e');
+    } finally {
+      if (mounted) setState(() => _plansLoading = false);
+    }
+  }
+
+  Future<void> _loadFiles() async {
+    final headers = widget.state.rows
+        .where((r) => r['kind'] == 'turnHeader' && r['rowId'] != null)
+        .toList();
+    if (headers.isEmpty) {
+      setState(() => _fileChanges = null);
+      return;
+    }
+    final last = headers.last;
+    setState(() {
+      _filesLoading = true;
+      _filesError = null;
+    });
+    try {
+      final res = await widget.transport.fileChanges(
+        widget.sessionId,
+        target: {
+          'rowId': last['rowId'],
+          if (last['entityId'] != null) 'entityId': last['entityId'],
+        },
+      );
+      if (!mounted) return;
+      setState(() => _fileChanges = res);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _filesError = '$e');
+    } finally {
+      if (mounted) setState(() => _filesLoading = false);
+    }
+  }
+
+  int? get _todoCount {
+    final items = parseInsightList(
+        _plans, const ['todos', 'items', 'plans', 'steps', 'list']);
+    return items?.length;
+  }
+
+  int get _turnFileTotal {
+    var total = 0;
+    for (final r in widget.state.rows) {
+      if (r['kind'] != 'turnHeader') continue;
+      final fc = r['fileChanges'];
+      if (fc is Map) {
+        final n = fc['files'] as num?;
+        if (n != null) total += n.toInt();
+      }
+    }
+    return total;
+  }
+
+  int get _bgCount =>
+      widget.state.backgroundWorks.where((w) {
+        return w['status'] == 'running' && w['endedAt'] == null;
+      }).length +
+      widget.state.rows.where((r) => r['kind'] == 'subagent').length;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 6, 14, 0),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              _chip(context, _todo, Icons.checklist_outlined, '待办',
+                  _todoCount),
+              const SizedBox(width: 6),
+              _chip(context, _files, Icons.folder_outlined, '文件',
+                  _turnFileTotal),
+              const SizedBox(width: 6),
+              _chip(context, _bg, Icons.hub_outlined, '后台', _bgCount),
+            ],
+          ),
+          AnimatedSize(
+            duration: const Duration(milliseconds: 150),
+            curve: Curves.easeOut,
+            alignment: Alignment.topCenter,
+            child: _open == null
+                ? const SizedBox(width: double.infinity)
+                : Container(
+                    width: double.infinity,
+                    margin: const EdgeInsets.only(top: 6),
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: ZInk.tile(context),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    constraints:
+                        const BoxConstraints(maxHeight: 260),
+                    child: switch (_open) {
+                      _todo => _todoPanel(context),
+                      _files => _filesPanel(context),
+                      _ => _bgPanel(context),
+                    },
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _chip(
+      BuildContext context, int index, IconData icon, String label, int? count) {
+    final selected = _open == index;
+    return Expanded(
+      child: GestureDetector(
+        onTap: () => _toggle(index),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          decoration: BoxDecoration(
+            color: selected
+                ? ZColors.primary.withValues(alpha: 0.14)
+                : ZInk.tile(context),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon,
+                  size: 14,
+                  color: selected ? ZColors.primary : ZInk.soft(context)),
+              const SizedBox(width: 4),
+              Text(
+                count != null ? '$label $count' : label,
+                style: TextStyle(
+                  fontSize: 11.5,
+                  color: selected ? ZColors.primary : ZInk.soft(context),
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _panelHeader(BuildContext context, String title, VoidCallback onRefresh,
+      {bool loading = false}) {
+    return Row(
+      children: [
+        Text(title,
+            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+        const Spacer(),
+        if (loading)
+          const SizedBox(
+              width: 12,
+              height: 12,
+              child: CircularProgressIndicator(strokeWidth: 1.5))
+        else
+          GestureDetector(
+            onTap: onRefresh,
+            child: Icon(Icons.refresh,
+                size: 15, color: ZInk.faint(context)),
+          ),
+      ],
+    );
+  }
+
+  Widget _errorRow(String error, VoidCallback onRetry) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('加载失败: $error',
+            style: TextStyle(fontSize: 11, color: ZColors.danger),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis),
+        TextButton(onPressed: onRetry, child: const Text('重试')),
+      ],
+    );
+  }
+
+  Widget _jsonFallback(dynamic data) {
+    const encoder = JsonEncoder.withIndent('  ');
+    return SingleChildScrollView(
+      child: SelectableText(
+        data == null ? '（无数据）' : encoder.convert(data),
+        style: const TextStyle(fontFamily: 'monospace', fontSize: 10),
+      ),
+    );
+  }
+
+  // ------------------------------------------------------------ todo panel
+
+  bool _todoDone(Map<String, dynamic> e) {
+    final v = '${e['status'] ?? e['state'] ?? e['done'] ?? ''}'.toLowerCase();
+    return v == 'true' || v == 'done' || v == 'completed' ||
+        v == 'success' || v == 'checked';
+  }
+
+  String _todoText(Map<String, dynamic> e) {
+    for (final k in const ['content', 'text', 'title', 'step', 'description']) {
+      final v = e[k];
+      if (v is String && v.isNotEmpty) return v;
+    }
+    return e.toString();
+  }
+
+  Widget _todoPanel(BuildContext context) {
+    Widget body;
+    if (_plansLoading) {
+      body = const Center(
+          child: SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 1.5)));
+    } else if (_plansError != null) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _panelHeader(context, '待办', _loadPlans),
+          _errorRow(_plansError!, _loadPlans),
+        ],
+      );
+    } else if (_plans == null) {
+      body = const SizedBox.shrink();
+    } else {
+      final items = parseInsightList(
+          _plans, const ['todos', 'items', 'plans', 'steps', 'list'],
+          allowEmpty: true);
+      if (items == null) {
+        body = _jsonFallback(_plans);
+      } else if (items.isEmpty) {
+        body = Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Text('暂无待办',
+              style: TextStyle(fontSize: 11.5, color: ZInk.faint(context))),
+        );
+      } else {
+        body = ListView.builder(
+          shrinkWrap: true,
+          itemCount: items.length,
+          itemBuilder: (context, i) {
+            final e = items[i];
+            final done = _todoDone(e);
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 3),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    done
+                        ? Icons.check_circle
+                        : Icons.radio_button_unchecked,
+                    size: 14,
+                    color: done ? ZColors.success : ZInk.faint(context),
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      _todoText(e),
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: done ? ZInk.faint(context) : ZInk.solid(context),
+                        decoration: done ? TextDecoration.lineThrough : null,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      }
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _panelHeader(context, '待办', _loadPlans, loading: _plansLoading),
+        Flexible(child: body),
+      ],
+    );
+  }
+
+  // ----------------------------------------------------------- files panel
+
+  Widget _filesPanel(BuildContext context) {
+    final headers = widget.state.rows
+        .where((r) =>
+            r['kind'] == 'turnHeader' &&
+            r['fileChanges'] is Map &&
+            ((r['fileChanges'] as Map)['files'] as num? ?? 0) > 0)
+        .toList()
+        .reversed
+        .toList();
+
+    Widget body;
+    if (_filesLoading) {
+      body = const Center(
+          child: SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 1.5)));
+    } else if (_filesError != null) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _panelHeader(context, '文件', _loadFiles),
+          _errorRow(_filesError!, _loadFiles),
+        ],
+      );
+    } else {
+      final entries = parseInsightList(
+          _fileChanges, const ['files', 'changes', 'fileChanges', 'items'],
+          allowEmpty: true);
+      body = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (headers.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Text(
+                '最近回合：'
+                '${headers.map((h) {
+                  final fc = (h['fileChanges'] as Map).cast<String, dynamic>();
+                  return '+${fc['additions'] ?? 0} −${fc['deletions'] ?? 0} · ${fc['files']} 文件';
+                }).join('；')}',
+                style:
+                    TextStyle(fontSize: 10.5, color: ZInk.faint(context)),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          if (_fileChanges == null)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Text('暂无文件变更数据',
+                  style:
+                      TextStyle(fontSize: 11.5, color: ZInk.faint(context))),
+            )
+          else if (entries == null)
+            Flexible(child: _jsonFallback(_fileChanges))
+          else if (entries.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Text('本回合无文件变更',
+                  style:
+                      TextStyle(fontSize: 11.5, color: ZInk.faint(context))),
+            )
+          else
+            Flexible(
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: entries.length,
+                itemBuilder: (context, i) =>
+                    _fileTile(context, entries[i]),
+              ),
+            ),
+        ],
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _panelHeader(context, '文件', _loadFiles, loading: _filesLoading),
+        Flexible(child: body),
+      ],
+    );
+  }
+
+  void _showFileDetail(BuildContext context, Map<String, dynamic> e) {
+    final path = e['path'] ?? e['filePath'] ?? e['file'] ?? e['name'] ?? '文件';
+    DiffData? diff = extractDiff(e);
+    // A raw unified-diff string field is also worth rendering.
+    if (diff == null) {
+      for (final k in const ['diff', 'patch']) {
+        final v = e[k];
+        if (v is String && v.contains('\n')) {
+          final lines = <DiffLine>[];
+          for (final line in v.split('\n')) {
+            if (line.startsWith('+')) {
+              lines.add(DiffLine(DiffLineType.added, line));
+            } else if (line.startsWith('-')) {
+              lines.add(DiffLine(DiffLineType.removed, line));
+            } else {
+              lines.add(DiffLine(DiffLineType.context, line));
+            }
+          }
+          diff = DiffData(filePath: path as String?, lines: lines);
+          break;
+        }
+      }
+    }
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.6,
+        builder: (context, scrollController) => SingleChildScrollView(
+          controller: scrollController,
+          padding: const EdgeInsets.all(16),
+          child: diff != null
+              ? Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('$path',
+                        style: const TextStyle(
+                            fontSize: 13, fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 8),
+                    DiffView(diff: diff),
+                  ],
+                )
+              : _JsonSheet(title: '$path', data: e),
+        ),
+      ),
+    );
+  }
+
+  Widget _fileTile(BuildContext context, Map<String, dynamic> e) {
+    final path = e['path'] ?? e['filePath'] ?? e['file'] ?? e['name'] ?? '文件';
+    final adds = (e['additions'] ?? e['added'] ?? e['insertions']) as num?;
+    final dels = (e['deletions'] ?? e['deleted'] ?? e['removed']) as num?;
+    return GestureDetector(
+      onTap: () => _showFileDetail(context, e),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3),
+        child: Row(
+          children: [
+            const Icon(Icons.description_outlined, size: 13),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text('$path',
+                  style: const TextStyle(
+                      fontSize: 11, fontFamily: 'monospace'),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis),
+            ),
+            if (adds != null && dels != null)
+              Text('+${adds.toInt()} −${dels.toInt()}',
+                  style: TextStyle(
+                      fontSize: 10.5, color: ZInk.faint(context))),
+            Icon(Icons.chevron_right, size: 14, color: ZInk.faint(context)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ------------------------------------------------------------- bg panel
+
+  String _fmtMs(num? v) {
+    if (v == null) return '';
+    final d = DateTime.fromMillisecondsSinceEpoch(v.toInt());
+    return '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+  }
+
+  Widget _bgPanel(BuildContext context) {
+    final works = widget.state.backgroundWorks;
+    final subagents =
+        widget.state.rows.where((r) => r['kind'] == 'subagent').toList();
+    if (works.isEmpty && subagents.isEmpty) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _panelHeader(context, '后台', () {}),
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Text('暂无后台任务',
+                style:
+                    TextStyle(fontSize: 11.5, color: ZInk.faint(context))),
+          ),
+        ],
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _panelHeader(context, '后台', () {}),
+        Flexible(
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              for (final w in works)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 3),
+                  child: Row(
+                    children: [
+                      if (w['status'] == 'running' && w['endedAt'] == null)
+                        const SizedBox(
+                            width: 12,
+                            height: 12,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 1.5))
+                      else
+                        Icon(Icons.check_circle_outline,
+                            size: 13, color: ZInk.faint(context)),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          '${w['title'] ?? w['kind'] ?? '后台任务'}'
+                          '${w['endedAt'] != null ? ' · ${_fmtMs(w['endedAt'] as num?)} 结束' : ''}',
+                          style: const TextStyle(fontSize: 11.5),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              for (final r in subagents)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 3),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.smart_toy_outlined,
+                          size: 13, color: Colors.deepPurpleAccent),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          '子代理 · ${r['subagentType'] ?? ''}'
+                          '${r['status'] != null && '${r['status']}'.isNotEmpty ? ' · ${r['status']}' : ''}'
+                          '${r['summaryText'] != null && '${r['summaryText']}'.isNotEmpty ? '\n${r['summaryText']}' : ''}',
+                          style:
+                              TextStyle(fontSize: 11, color: ZInk.soft(context)),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }

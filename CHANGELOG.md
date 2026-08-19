@@ -2,6 +2,15 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.7.0] - 2026-08-19
+
+### Added
+- 任务对话页 token 计量条下方新增三个折叠面板（默认收起，点开互斥展开）：
+  - **待办**：`conversationPlansV4` 拉取当前待办/计划，勾选状态 + 内容列表，可手动刷新；
+  - **文件**：最近各回合变更摘要（+增 −删 · 文件数），并对最新回合调 `conversationFileChangesV4` 列出文件明细（路径 + 增删），点单个文件弹出 DiffView 渲染 diff（支持 structuredPatch 与 unified-diff 字符串）；
+  - **后台**：backgroundWorks 全列表（运行中转圈、已结束显示结束时间）+ 会话内 subagent 行（类型/状态/摘要）。
+  面板对未知数据结构做容错：认得出就结构化渲染，认不出降级为等宽 JSON 视图，数据永远可见。
+
 ## [0.6.1] - 2026-08-19
 
 ### Fixed
