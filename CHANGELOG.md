@@ -2,6 +2,15 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.7.2] - 2026-08-19
+
+### Fixed
+基于对桌面宿主源码（zcode.cjs）的逆向与真实设备探针验证，三个面板全部按官方契约重写：
+- **待办**：不再调 `conversationPlansV4`（那是"计划模式"接口，与待办无关，恒为空）。改为镜像桌面宿主的官方推导：取最新一条工具名匹配 `todo read/write / update_plan` 的 toolCall 行，解析其 input/output（含 JSON 字符串）中的 `todos/plan/steps/items`，状态归一化 `pending/in_progress/completed`，全有或全无。真机验证：在含待办的任务中正确提取 5 条待办及状态。
+- **文件**：`conversationFileChangesV4` 的正确契约是 `target=turnHeader行的{rowId, entityId}` + 必填 `baseRevision` + `baseLogEpoch`（此前缺后两者、target 传错行类型，被 Zod 与守卫双重拒绝）。真机验证调用成功；diff 渲染支持真实返回的 `items[].patches[].lines` unified diff 结构。长按消息的"查看文件变更"菜单同样修复（按 turnId 解析回合头）。
+- **后台**：`backgroundWorks` 状态枚举实为 `running/resultPending/failed/cancelled`（无 completed），分别映射 转圈/待取结果/失败/已取消 图标与后缀；子代理状态改用快照 `subagents.running[]`（title/subagentType/status/summary/startedAt，枚举 running/waiting/blocked）并显示 `endedTotal`，行内 subagent 行仅作旧流降级。
+- 新增 `test/live_probe_test.dart` 只读探针（环境变量注入凭据，无凭据自动跳过），作为协议变更时的诊断工具。
+
 ## [0.7.1] - 2026-08-19
 
 ### Fixed

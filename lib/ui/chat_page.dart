@@ -1246,9 +1246,30 @@ class _RowWidget extends StatelessWidget {
 
   Future<void> _showFileChanges(BuildContext context) async {
     try {
+      // The server guard accepts turnHeader targets only — resolve this
+      // row's turn header (rows carry the same turnId) and add the
+      // Zod-required baseRevision/baseLogEpoch.
+      final turnId = row['turnId'];
+      Map<String, dynamic>? header;
+      for (final r in state.rows) {
+        if (r['kind'] == 'turnHeader' &&
+            r['rowId'] != null &&
+            r['entityId'] is String) {
+          if (turnId == null || r['turnId'] == turnId) header = r;
+        }
+      }
+      if (header == null) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('该回合没有可查询的文件变更')));
+        }
+        return;
+      }
       final changes = await transport.fileChanges(
         sessionId,
-        target: _target,
+        target: {'rowId': header['rowId'], 'entityId': header['entityId']},
+        baseRevision: state.revision,
+        baseLogEpoch: state.logEpoch,
       );
       if (!context.mounted) return;
       showModalBottomSheet(
@@ -2040,6 +2061,101 @@ class _ContextUsageBar extends StatelessWidget {
   }
 }
 
+/// Mirrors the desktop host's remote todo derivation: find tool-call rows
+/// whose tool name matches todo read/write / update_plan, take the latest,
+/// and extract a todos/plan/steps/items array from its payload (raw map or
+/// JSON string, from input / output / output.text). All-or-nothing: one
+/// malformed item discards the row.
+class PlanStep {
+  final String id;
+  final String title;
+  final String status; // pending | in_progress | completed
+
+  const PlanStep({required this.id, required this.title, required this.status});
+
+  bool get completed => status == 'completed';
+  bool get inProgress => status == 'in_progress';
+}
+
+final _todoPlanToolName = RegExp(
+    r'(?:^|[_\s-])(?:todo[_\s-]*(?:read|write)|update[_\s-]*plan)(?:$|[_\s-])',
+    caseSensitive: false);
+
+String? _normalizePlanStatus(Object? v) {
+  final t = '$v'.replaceAll('-', '_').toLowerCase();
+  return t == 'pending' || t == 'in_progress' || t == 'completed' ? t : null;
+}
+
+PlanStep? _parsePlanStep(Object? item, int index) {
+  if (item is String) {
+    final t = item.trim();
+    return t.isEmpty
+        ? null
+        : PlanStep(
+            id: t, title: t, status: index == 0 ? 'in_progress' : 'pending');
+  }
+  if (item is! Map) return null;
+  final m = item.cast<String, dynamic>();
+  String? str(Object? v) {
+    if (v is! String) return null; // host's readString: strings only
+    final s = v.trim();
+    return s.isEmpty ? null : s;
+  }
+
+  final title = str(m['content']) ??
+      str(m['step']) ??
+      str(m['title']) ??
+      str(m['text']) ??
+      str(m['activeForm']);
+  final status = _normalizePlanStatus(m['status']);
+  if (title == null || status == null) return null;
+  return PlanStep(id: str(m['id']) ?? title, title: title, status: status);
+}
+
+List<PlanStep>? deriveTodoSteps(List<Map<String, dynamic>> rows) {
+  for (final row in rows.reversed) {
+    final name =
+        '${row['toolName'] ?? ''} ${row['title'] ?? ''} ${row['kind'] ?? ''}';
+    if (name.trim().isEmpty || !_todoPlanToolName.hasMatch(name)) continue;
+    for (final cand in _planPayloadCandidates(row)) {
+      final steps = _planStepsFromValue(cand);
+      if (steps != null) return steps;
+    }
+  }
+  return null;
+}
+
+List<Object?> _planPayloadCandidates(Map<String, dynamic> row) {
+  final output = row['output'];
+  final out = <Object?>[row['input'], row['inputText'], row['content'], output];
+  if (output is Map) out.add(output['text']);
+  return out;
+}
+
+List<PlanStep>? _planStepsFromValue(Object? v) {
+  Object? t = v;
+  if (t is String) {
+    try {
+      t = jsonDecode(t);
+    } catch (_) {
+      return null;
+    }
+  }
+  if (t is! Map) return null;
+  for (final k in const ['todos', 'plan', 'steps', 'items']) {
+    final arr = t[k];
+    if (arr is! List || arr.isEmpty) continue;
+    final steps = <PlanStep>[];
+    for (var i = 0; i < arr.length; i++) {
+      final s = _parsePlanStep(arr[i], i);
+      if (s == null) return null; // all-or-nothing
+      steps.add(s);
+    }
+    return steps;
+  }
+  return null;
+}
+
 /// Heuristic list extraction for insight panels: recognizes a direct list
 /// or `data[one of keys]` as a list of maps. Returns null when the shape is
 /// unrecognized (panels then fall back to a raw JSON view — data is never
@@ -2083,55 +2199,33 @@ class _InsightsRowState extends State<_InsightsRow> {
 
   int? _open;
 
-  dynamic _plans;
-  bool _plansLoading = false;
-  String? _plansError;
-
   dynamic _fileChanges;
   bool _filesLoading = false;
   String? _filesError;
 
   void _toggle(int index) {
     setState(() => _open = _open == index ? null : index);
-    if (_open == _todo && _plans == null && _plansError == null) {
-      _loadPlans();
-    }
     if (_open == _files && _fileChanges == null && _filesError == null) {
       _loadFiles();
     }
   }
 
-  Future<void> _loadPlans() async {
-    setState(() {
-      _plansLoading = true;
-      _plansError = null;
-    });
-    try {
-      final plans = await widget.transport.plans(widget.sessionId);
-      if (!mounted) return;
-      setState(() => _plans = plans);
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _plansError = _fmtRpcError(e));
-    } finally {
-      if (mounted) setState(() => _plansLoading = false);
-    }
-  }
-
+  /// File changes are turn-scoped: the target must be a `turnHeader` row
+  /// (see the desktop guard: any other kind is rejected with
+  /// `guard.actionUnavailable`) and the call requires baseRevision +
+  /// baseLogEpoch (Zod-validated).
   Future<void> _loadFiles() async {
-    // The web client calls conversationFileChangesV4 with the target of a
-    // TEXT row (userInput/assistantText) — that's the shape the server
-    // accepts; a turnHeader rowId gets rejected with an empty error.
-    final textRows = widget.state.rows
+    final headers = widget.state.rows
         .where((r) =>
-            (r['kind'] == 'userInput' || r['kind'] == 'assistantText') &&
-            r['rowId'] != null)
+            r['kind'] == 'turnHeader' &&
+            r['rowId'] != null &&
+            r['entityId'] is String)
         .toList();
-    if (textRows.isEmpty) {
+    if (headers.isEmpty) {
       setState(() => _fileChanges = null);
       return;
     }
-    final last = textRows.last;
+    final last = headers.last;
     setState(() {
       _filesLoading = true;
       _filesError = null;
@@ -2139,10 +2233,9 @@ class _InsightsRowState extends State<_InsightsRow> {
     try {
       final res = await widget.transport.fileChanges(
         widget.sessionId,
-        target: {
-          'rowId': last['rowId'],
-          if (last['entityId'] != null) 'entityId': last['entityId'],
-        },
+        target: {'rowId': last['rowId'], 'entityId': last['entityId']},
+        baseRevision: widget.state.revision,
+        baseLogEpoch: widget.state.logEpoch,
       );
       if (!mounted) return;
       setState(() => _fileChanges = res);
@@ -2164,45 +2257,7 @@ class _InsightsRowState extends State<_InsightsRow> {
     return '$e';
   }
 
-  /// Todo items with defensive digging:
-  /// - direct list / `data[todos|items|plans|steps|list]`
-  /// - single-plan unwrap: `data[plan|currentPlan|activePlan][todos|steps|items]`
-  /// - one-level flatten: a list of PLANS each holding todos → the todos.
-  /// Returns null when nothing list-shaped is found (caller falls back to
-  /// the raw JSON view so the real shape stays visible).
-  List<Map<String, dynamic>>? _todoItems() {
-    if (_plans == null) return null;
-    List<Map<String, dynamic>>? items = parseInsightList(
-        _plans, const ['todos', 'items', 'plans', 'steps', 'list'],
-        allowEmpty: true);
-    if (items == null && _plans is Map) {
-      for (final k in const ['plan', 'currentPlan', 'activePlan']) {
-        final v = (_plans as Map)[k];
-        if (v is Map) {
-          items = parseInsightList(
-              v, const ['todos', 'steps', 'items'],
-              allowEmpty: true);
-          if (items != null) break;
-        }
-      }
-    }
-    if (items == null) return null;
-    final flattened = <Map<String, dynamic>>[];
-    var sawNested = false;
-    for (final e in items) {
-      final inner =
-          parseInsightList(e, const ['todos', 'steps', 'items']);
-      if (inner != null) {
-        sawNested = true;
-        flattened.addAll(inner);
-      } else {
-        flattened.add(e);
-      }
-    }
-    return sawNested ? flattened : items;
-  }
-
-  int? get _todoCount => _todoItems()?.length;
+  int get _todoCount => deriveTodoSteps(widget.state.rows)?.length ?? 0;
 
   int get _turnFileTotal {
     var total = 0;
@@ -2351,93 +2406,62 @@ class _InsightsRowState extends State<_InsightsRow> {
 
   // ------------------------------------------------------------ todo panel
 
-  bool _todoDone(Map<String, dynamic> e) {
-    final v =
-        '${e['status'] ?? e['state'] ?? e['done'] ?? e['checked'] ?? e['isDone'] ?? ''}'
-            .toLowerCase();
-    return v == 'true' || v == 'done' || v == 'completed' ||
-        v == 'success' || v == 'checked';
-  }
-
-  String _todoText(Map<String, dynamic> e) {
-    for (final k in const [
-      'content', 'text', 'title', 'step', 'description', 'name',
-    ]) {
-      final v = e[k];
-      if (v is String && v.isNotEmpty) return v;
-    }
-    return e.toString();
-  }
-
   Widget _todoPanel(BuildContext context) {
-    Widget body;
-    if (_plansLoading) {
-      body = const Center(
-          child: SizedBox(
-              width: 16,
-              height: 16,
-              child: CircularProgressIndicator(strokeWidth: 1.5)));
-    } else if (_plansError != null) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _panelHeader(context, '待办', _loadPlans),
-          _errorRow(_plansError!, _loadPlans),
-        ],
+    final steps = deriveTodoSteps(widget.state.rows);
+    final Widget body;
+    if (steps == null) {
+      body = Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Text('暂无待办',
+            style: TextStyle(fontSize: 11.5, color: ZInk.faint(context))),
       );
-    } else if (_plans == null) {
-      body = const SizedBox.shrink();
     } else {
-      final items = _todoItems();
-      if (items == null) {
-        body = _jsonFallback(_plans);
-      } else if (items.isEmpty) {
-        body = Padding(
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          child: Text('暂无待办',
-              style: TextStyle(fontSize: 11.5, color: ZInk.faint(context))),
-        );
-      } else {
-        body = ListView.builder(
-          shrinkWrap: true,
-          itemCount: items.length,
-          itemBuilder: (context, i) {
-            final e = items[i];
-            final done = _todoDone(e);
-            return Padding(
-              padding: const EdgeInsets.symmetric(vertical: 3),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Icon(
-                    done
-                        ? Icons.check_circle
-                        : Icons.radio_button_unchecked,
-                    size: 14,
-                    color: done ? ZColors.success : ZInk.faint(context),
-                  ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      _todoText(e),
-                      style: TextStyle(
-                        fontSize: 11.5,
-                        color: done ? ZInk.faint(context) : ZInk.solid(context),
-                        decoration: done ? TextDecoration.lineThrough : null,
-                      ),
+      body = ListView.builder(
+        shrinkWrap: true,
+        itemCount: steps.length,
+        itemBuilder: (context, i) {
+          final s = steps[i];
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 3),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(
+                  s.completed
+                      ? Icons.check_circle
+                      : s.inProgress
+                          ? Icons.play_circle_outline
+                          : Icons.radio_button_unchecked,
+                  size: 14,
+                  color: s.completed
+                      ? ZColors.success
+                      : s.inProgress
+                          ? ZColors.primary
+                          : ZInk.faint(context),
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    s.title,
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      color: s.completed
+                          ? ZInk.faint(context)
+                          : ZInk.solid(context),
+                      decoration: s.completed ? TextDecoration.lineThrough : null,
                     ),
                   ),
-                ],
-              ),
-            );
-          },
-        );
-      }
+                ),
+              ],
+            ),
+          );
+        },
+      );
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _panelHeader(context, '待办', _loadPlans, loading: _plansLoading),
+        _panelHeader(context, '待办（最新 TodoWrite）', () {}),
         Flexible(child: body),
       ],
     );
@@ -2532,6 +2556,37 @@ class _InsightsRowState extends State<_InsightsRow> {
   void _showFileDetail(BuildContext context, Map<String, dynamic> e) {
     final path = e['path'] ?? e['filePath'] ?? e['file'] ?? e['name'] ?? '文件';
     DiffData? diff = extractDiff(e);
+    // The real conversationFileChangesV4 payload: items[].patches[] with
+    // unified-diff `lines` (+/-/space) — render them as one diff.
+    if (diff == null) {
+      final patches = e['patches'];
+      if (patches is List && patches.isNotEmpty) {
+        final lines = <DiffLine>[];
+        for (final hunk in patches) {
+          if (hunk is! Map) continue;
+          final h = hunk.cast<String, dynamic>();
+          lines.add(DiffLine(
+              DiffLineType.context,
+              '@@ -${h['oldStart'] ?? 0},${h['oldLines'] ?? 0} '
+              '+${h['newStart'] ?? 0},${h['newLines'] ?? 0} @@'));
+          final hunkLines = h['lines'];
+          if (hunkLines is! List) continue;
+          for (final line in hunkLines) {
+            if (line is! String) continue;
+            if (line.startsWith('+')) {
+              lines.add(DiffLine(DiffLineType.added, line));
+            } else if (line.startsWith('-')) {
+              lines.add(DiffLine(DiffLineType.removed, line));
+            } else {
+              lines.add(DiffLine(DiffLineType.context, line));
+            }
+          }
+        }
+        if (lines.isNotEmpty) {
+          diff = DiffData(filePath: path as String?, lines: lines);
+        }
+      }
+    }
     // A raw unified-diff string field is also worth rendering.
     if (diff == null) {
       for (final k in const ['diff', 'patch']) {
@@ -2616,11 +2671,113 @@ class _InsightsRowState extends State<_InsightsRow> {
     return '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
   }
 
+  /// backgroundWorks entry: {workId, kind: bash|subagent, title,
+  /// status: running|resultPending|failed|cancelled, startedAt(ms),
+  /// endedAt?(ms), cancellable?, blocked?, childSessionId?}
+  Widget _workTile(BuildContext context, Map<String, dynamic> w) {
+    final status = '${w['status']}';
+    final Widget leading;
+    String suffix = '';
+    if (status == 'running') {
+      leading = const SizedBox(
+          width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 1.5));
+    } else if (status == 'failed') {
+      leading = Icon(Icons.error_outline, size: 13, color: ZColors.danger);
+      suffix = ' · 失败';
+    } else if (status == 'cancelled') {
+      leading = Icon(Icons.block, size: 13, color: ZColors.warning);
+      suffix = ' · 已取消';
+    } else {
+      leading = Icon(Icons.hourglass_bottom,
+          size: 13, color: ZInk.faint(context));
+      suffix = ' · 待取结果';
+    }
+    final kindIcon = w['kind'] == 'bash' ? Icons.terminal : Icons.smart_toy_outlined;
+    final endedAt = w['endedAt'];
+    final startedAt = w['startedAt'];
+    final time = endedAt != null
+        ? ' · ${_fmtMs(endedAt as num?)} 结束'
+        : startedAt != null
+            ? ' · ${_fmtMs(startedAt as num?)} 开始'
+            : '';
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        children: [
+          Icon(kindIcon, size: 13, color: ZInk.faint(context)),
+          const SizedBox(width: 5),
+          leading,
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              '${w['title'] ?? w['kind'] ?? '后台任务'}$suffix$time',
+              style: const TextStyle(fontSize: 11.5),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// snapshot.subagents.running entry: {childSessionId, agentId?,
+  /// toolCallId?, subagentType, title, summary?, status:
+  /// running|waiting|blocked, startedAt?(ms)}
+  Widget _subagentTile(BuildContext context, Map<String, dynamic> s) {
+    final status = '${s['status']}';
+    final Widget leading;
+    if (status == 'running') {
+      leading = const SizedBox(
+          width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 1.5));
+    } else if (status == 'blocked') {
+      leading = const Icon(Icons.lock_outline, size: 13, color: ZColors.warning);
+    } else {
+      leading = Icon(Icons.hourglass_bottom,
+          size: 13, color: ZInk.faint(context)); // waiting
+    }
+    final summary = '${s['summary'] ?? ''}';
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          leading,
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              '${s['title'] ?? '子代理'} · ${s['subagentType'] ?? ''}'
+              '${status == 'waiting' ? ' · 等待中' : status == 'blocked' ? ' · 被阻塞' : ''}'
+              '${s['startedAt'] != null ? ' · ${_fmtMs(s['startedAt'] as num?)} 开始' : ''}'
+              '${summary.trim().isNotEmpty ? '\n$summary' : ''}',
+              style: TextStyle(fontSize: 11, color: ZInk.soft(context)),
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _bgPanel(BuildContext context) {
     final works = widget.state.backgroundWorks;
-    final subagents =
-        widget.state.rows.where((r) => r['kind'] == 'subagent').toList();
-    if (works.isEmpty && subagents.isEmpty) {
+    // Authoritative subagent status lives in snapshot.subagents
+    // {revision, childSessionIds, running[], endedTotal}; inline
+    // subagent ROWS are only a fallback for streams without the field.
+    final subsObj = widget.state.snapshot?['subagents'];
+    final subs = subsObj is Map ? subsObj.cast<String, dynamic>() : null;
+    final runningSubs =
+        subs == null ? null : parseInsightList(subs['running'], const []);
+    final endedTotal = (subs?['endedTotal'] as num?)?.toInt() ?? 0;
+    final subRows = subs == null
+        ? widget.state.rows.where((r) => r['kind'] == 'subagent').toList()
+        : const <Map<String, dynamic>>[];
+
+    if (works.isEmpty &&
+        (runningSubs == null || runningSubs.isEmpty) &&
+        subRows.isEmpty &&
+        endedTotal == 0) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -2642,34 +2799,24 @@ class _InsightsRowState extends State<_InsightsRow> {
           child: ListView(
             shrinkWrap: true,
             children: [
-              for (final w in works)
+              for (final w in works) _workTile(context, w),
+              if (runningSubs != null && runningSubs.isNotEmpty) ...[
                 Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 3),
-                  child: Row(
-                    children: [
-                      if (w['status'] == 'running' && w['endedAt'] == null)
-                        const SizedBox(
-                            width: 12,
-                            height: 12,
-                            child: CircularProgressIndicator(
-                                strokeWidth: 1.5))
-                      else
-                        Icon(Icons.check_circle_outline,
-                            size: 13, color: ZInk.faint(context)),
-                      const SizedBox(width: 6),
-                      Expanded(
-                        child: Text(
-                          '${w['title'] ?? w['kind'] ?? '后台任务'}'
-                          '${w['endedAt'] != null ? ' · ${_fmtMs(w['endedAt'] as num?)} 结束' : ''}',
-                          style: const TextStyle(fontSize: 11.5),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                    ],
-                  ),
+                  padding: const EdgeInsets.only(top: 4, bottom: 2),
+                  child: Text('运行中的子代理',
+                      style: TextStyle(
+                          fontSize: 10.5, color: ZInk.faint(context))),
                 ),
-              for (final r in subagents)
+                for (final s in runningSubs) _subagentTile(context, s),
+              ],
+              if (endedTotal > 0)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text('已结束 $endedTotal 个子代理',
+                      style: TextStyle(
+                          fontSize: 10.5, color: ZInk.faint(context))),
+                ),
+              for (final r in subRows)
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 3),
                   child: Row(
@@ -2682,8 +2829,8 @@ class _InsightsRowState extends State<_InsightsRow> {
                           '子代理 · ${r['subagentType'] ?? ''}'
                           '${r['status'] != null && '${r['status']}'.isNotEmpty ? ' · ${r['status']}' : ''}'
                           '${r['summaryText'] != null && '${r['summaryText']}'.isNotEmpty ? '\n${r['summaryText']}' : ''}',
-                          style:
-                              TextStyle(fontSize: 11, color: ZInk.soft(context)),
+                          style: TextStyle(
+                              fontSize: 11, color: ZInk.soft(context)),
                         ),
                       ),
                     ],
