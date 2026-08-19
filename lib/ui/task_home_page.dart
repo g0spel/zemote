@@ -93,32 +93,18 @@ class _TaskHomePageState extends State<TaskHomePage>
       final tasks = result['tasks'];
       if (tasks is! List) return;
       setState(() {
-        final byId = <String, Map<String, dynamic>>{};
-        for (final t in _tasks) {
-          if (t is Map && t['taskId'] != null) {
-            byId['${t['taskId']}'] = (t).cast<String, dynamic>();
-          }
-        }
-        for (final t in tasks) {
-          if (t is! Map || t['taskId'] == null) continue;
-          final id = '${t['taskId']}';
-          final map = (t).cast<String, dynamic>();
-          // Partition by the workspace-list flags: archived tasks belong
-          // to the archived tab, never the active list.
-          if (map['archived'] == true || map['deleted'] == true) {
-            _archivedIds.add(id);
-            byId.remove(id);
-            continue;
-          }
-          _archivedIds.remove(id);
-          byId[id] = {...?byId[id], ...map};
-        }
-        final merged = byId.values
-            .where((t) => !_isRecentlyRemoved('${t['taskId']}'))
-            .toList()
-          ..sort((a, b) => ((b['updatedAt'] as num?) ?? 0)
-              .compareTo((a['updatedAt'] as num?) ?? 0));
-        _tasks = merged;
+        _tasks = applyWorkspaceListUpdate(
+          [
+            for (final t in _tasks)
+              if (t is Map && t['taskId'] != null) t.cast<String, dynamic>(),
+          ],
+          [
+            for (final t in tasks)
+              if (t is Map && t['taskId'] != null) t.cast<String, dynamic>(),
+          ],
+          _archivedIds,
+          _isRecentlyRemoved,
+        );
       });
     });
     _load();
@@ -181,29 +167,20 @@ class _TaskHomePageState extends State<TaskHomePage>
         .toList();
     if (entries.isEmpty && _tasks.isEmpty) return;
     setState(() {
+      // The sessions-index is scoped to THIS workspace, so its entries may
+      // introduce new tasks; channel tasks missing from the index are kept
+      // (index lag). Entry fields (phase/preview/updatedAt) win on overlap.
       final byId = <String, Map<String, dynamic>>{};
       for (final e in entries) {
         byId[e.sessionId] = _entryToTask(e);
       }
-      final merged = <String, Map<String, dynamic>>{};
-      // channel tasks enriched with preview/phase from sessions-index
       for (final t in _tasks) {
-        if (t is Map && t['taskId'] != null) {
-          final id = '${t['taskId']}';
-          if (_isRecentlyRemoved(id) || _archivedIds.contains(id)) {
-            continue;
-          }
-          final entry = byId.remove(id);
-          merged[id] = {
-            ...(t).cast<String, dynamic>(),
-            if (entry != null) ...{
-              'lastAssistantPreview': entry['lastAssistantPreview'],
-              'hasBackgroundWork': entry['hasBackgroundWork'],
-            },
-          };
-        }
+        if (t is! Map || t['taskId'] == null) continue;
+        final id = '${t['taskId']}';
+        if (_isRecentlyRemoved(id) || _archivedIds.contains(id)) continue;
+        byId.putIfAbsent(id, () => t.cast<String, dynamic>());
       }
-      final list = merged.values.toList()
+      final list = byId.values.toList()
         ..sort((a, b) => ((b['updatedAt'] as num?) ?? 0)
             .compareTo((a['updatedAt'] as num?) ?? 0));
       _tasks = list;
@@ -986,4 +963,39 @@ class _TaskList extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Merge for the GLOBAL `workspace-list-updated` event.
+///
+/// The event is a client-level broadcast: its `tasks` array is NOT scoped
+/// to the workspace this page shows, so merging it must never INTRODUCE a
+/// taskId the scoped list hasn't seen — otherwise other workspaces' tasks
+/// leak into this page (and vanish again on the next scoped refresh).
+/// It may only update/flag tasks already known here. New tasks arrive via
+/// the scoped sessions-index push.
+List<Map<String, dynamic>> applyWorkspaceListUpdate(
+  List<Map<String, dynamic>> current,
+  List<Map<String, dynamic>> incoming,
+  Set<String> archivedIds,
+  bool Function(String taskId) isHidden,
+) {
+  final byId = <String, Map<String, dynamic>>{};
+  for (final t in current) {
+    byId['${t['taskId']}'] = t;
+  }
+  for (final t in incoming) {
+    final id = '${t['taskId']}';
+    if (!byId.containsKey(id)) continue; // cross-workspace guard
+    if (t['archived'] == true || t['deleted'] == true) {
+      archivedIds.add(id);
+      byId.remove(id);
+      continue;
+    }
+    archivedIds.remove(id);
+    byId[id] = {...byId[id]!, ...t};
+  }
+  final merged = byId.values.where((t) => !isHidden('${t['taskId']}')).toList()
+    ..sort((a, b) => ((b['updatedAt'] as num?) ?? 0)
+        .compareTo((a['updatedAt'] as num?) ?? 0));
+  return merged;
 }

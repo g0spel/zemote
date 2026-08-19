@@ -1342,6 +1342,10 @@ class ConversationState extends ChangeNotifier {
     switch (delta['op']) {
       case 'row.appended':
         final row = (delta['row'] as Map).cast<String, dynamic>();
+        // View-layer arrival stamp (ms since epoch). The wire rows carry no
+        // timestamps, so the UI can only show times for rows observed live;
+        // history loaded from snapshots stays unstamped. Never sent back.
+        row['_zemoteTs'] = DateTime.now().millisecondsSinceEpoch;
         rows.add(row);
         totalCount += 1;
         firstRowId ??= (row['rowId'] as num?)?.toInt();
@@ -1351,7 +1355,15 @@ class ConversationState extends ChangeNotifier {
         final id = (row['rowId'] as num?)?.toInt();
         final index = rows.indexWhere(
             (r) => (r['rowId'] as num?)?.toInt() == id);
-        if (index != -1) rows[index] = row;
+        if (index != -1) {
+          // Upserts replace the whole row; keep the original arrival stamp
+          // so streaming edits don't reset the bubble's displayed time.
+          // (Guarded write: the wire map may be typed with non-nullable
+          // values, which rejects a null assignment.)
+          final prev = rows[index]['_zemoteTs'];
+          if (prev != null) row['_zemoteTs'] = prev;
+          rows[index] = row;
+        }
         break;
       case 'row.removed':
         // Mirrors `fke()` in the web client: KEEP rows with

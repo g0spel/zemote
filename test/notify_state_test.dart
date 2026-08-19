@@ -90,4 +90,26 @@ void main() {
     expect(text, contains('正在应用 diff'));
     expect(text, contains('• 写测试'));
   });
+
+  test('completion events carry phase and activity marker', () {
+    final update = computeNotifyUpdate(
+      sessions: [
+        _entry('a', 'failed', preview: 'boom'),
+        _entry('b', 'completedSuccess', preview: 'ok'),
+      ],
+      previousPhases: const {'a': 'running', 'b': 'running'},
+    );
+    final phases = {for (final c in update.completed) c.taskId: c.phase};
+    expect(phases['a'], 'failed');
+    expect(phases['b'], 'completedSuccess');
+  });
+
+  test('completionTitleFor differentiates failures', () {
+    expect(completionTitleFor('completedSuccess'), '任务完成');
+    expect(completionTitleFor('completed'), '任务完成');
+    expect(completionTitleFor('failed'), '任务失败');
+    expect(completionTitleFor('error'), '任务失败');
+    expect(completionTitleFor('completedInterrupted'), '任务中断');
+    expect(completionTitleFor('cancelled'), '任务中断');
+  });
 }

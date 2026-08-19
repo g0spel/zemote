@@ -31,11 +31,17 @@ class CompletionEvent {
   final String taskId;
   final String title;
   final String preview;
+  final String phase;
+  /// Monotonic activity marker from the sessions-index; used to suppress
+  /// stale repeats (0 when the server omits it).
+  final int lastActivityAt;
 
   const CompletionEvent({
     required this.taskId,
     required this.title,
     required this.preview,
+    required this.phase,
+    required this.lastActivityAt,
   });
 }
 
@@ -79,11 +85,21 @@ NotifyUpdate computeNotifyUpdate({
       taskId: sessionId,
       title: entry?.title.isNotEmpty == true ? entry!.title : sessionId,
       preview: entry?.lastAssistantPreview ?? '',
+      phase: now,
+      lastActivityAt: entry?.lastActivityAt ?? 0,
     ));
   });
 
   return NotifyUpdate(running: running, completed: completed);
 }
+
+/// Notification title for a terminal phase — failures must not announce
+/// themselves as completions.
+String completionTitleFor(String phase) => switch (phase) {
+      'failed' || 'error' => '任务失败',
+      'completedInterrupted' || 'cancelled' => '任务中断',
+      _ => '任务完成',
+    };
 
 /// Formats the running-tasks list into the persistent notification text.
 String formatRunningText(List<RunningTask> running) {

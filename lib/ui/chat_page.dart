@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
@@ -741,6 +742,8 @@ class _ChatPageState extends State<ChatPage> {
                               }
                               final group = groups[groups.length - 1 - index];
                               return _TurnGroupWidget(
+                                key: ValueKey(
+                                    'g${group.first['rowId'] ?? group.length}'),
                                 rows: group,
                                 transport: _transport,
                                 sessionId: _sessionId ?? '',
@@ -964,12 +967,52 @@ class _TurnGroupWidget extends StatelessWidget {
   final ConversationState state;
 
   const _TurnGroupWidget({
+    super.key,
     required this.rows,
     required this.transport,
     required this.sessionId,
     required this.onAction,
     required this.state,
   });
+
+  /// First error snippet among this turn's failed tool calls — shown on the
+  /// 本轮失败 header so failures are self-explaining.
+  String? _errorSummary() {
+    for (final r in rows) {
+      if (r['kind'] != 'toolCall' || r['status'] != 'error') continue;
+      var s = '';
+      final e = r['error'];
+      if (e is Map) {
+        s = '${e['message'] ?? e['text'] ?? e}';
+      } else if (e != null) {
+        s = '$e';
+      }
+      s = s.trim();
+      if (s.isEmpty || s == 'null') {
+        final out = r['output'];
+        if (out is Map) s = '${out['text'] ?? ''}'.trim();
+      }
+      if (s.isNotEmpty) {
+        return s.length > 160 ? '${s.substring(0, 160)}…' : s;
+      }
+    }
+    return null;
+  }
+
+  /// `HH:mm` for rows observed live (view-layer `_zemoteTs` stamp). History
+  /// rows carry no timestamp on the wire, so they show none.
+  Widget? _timeLabel(BuildContext context) {
+    final ts = rows.first['_zemoteTs'] as int?;
+    if (ts == null) return null;
+    final d = DateTime.fromMillisecondsSinceEpoch(ts);
+    final text =
+        '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+    return Padding(
+      padding: const EdgeInsets.only(top: 2, bottom: 2),
+      child: Text(text,
+          style: TextStyle(fontSize: 9, color: ZInk.faint(context))),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -998,6 +1041,10 @@ class _TurnGroupWidget extends StatelessWidget {
               onAction: onAction,
               state: state,
             ),
+          if (_timeLabel(context) != null)
+            Align(
+                alignment: Alignment.centerRight,
+                child: _timeLabel(context)),
         ],
       );
     }
@@ -1037,7 +1084,18 @@ class _TurnGroupWidget extends StatelessWidget {
       }
     }
     final header = parts.header;
-    if (header != null) children.add(_TurnHeader(row: header));
+    if (header != null) {
+      children.add(_TurnHeader(
+        row: header,
+        errorSummary: (header['state'] as String?) == 'failed'
+            ? _errorSummary()
+            : null,
+      ));
+    }
+    if (_timeLabel(context) != null) {
+      children.add(Align(
+          alignment: Alignment.centerLeft, child: _timeLabel(context)));
+    }
     if (children.isEmpty) return const SizedBox.shrink();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1663,13 +1721,63 @@ class _ProgressRow extends StatelessWidget {
   }
 }
 
-class _TurnHeader extends StatelessWidget {
+class _TurnHeader extends StatefulWidget {
   final Map<String, dynamic> row;
 
-  const _TurnHeader({required this.row});
+  /// First error snippet of this turn's failed tool calls (failure state).
+  final String? errorSummary;
+
+  const _TurnHeader({required this.row, this.errorSummary});
+
+  @override
+  State<_TurnHeader> createState() => _TurnHeaderState();
+}
+
+class _TurnHeaderState extends State<_TurnHeader> {
+  final Stopwatch _watch = Stopwatch();
+  Timer? _ticker;
+
+  String get _state => widget.row['state'] as String? ?? '';
+
+  @override
+  void initState() {
+    super.initState();
+    _syncTimer();
+  }
+
+  @override
+  void didUpdateWidget(covariant _TurnHeader oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _syncTimer();
+  }
+
+  /// The wire only sends activeMs on completion, so while running the
+  /// elapsed time ticks from a local stopwatch (started when the running
+  /// header first appeared — reopening an already-running turn counts from
+  /// open). If a live activeMs shows up in deltas, it wins.
+  void _syncTimer() {
+    final running = _state == 'running';
+    if (running && !_watch.isRunning) {
+      _watch.start();
+      _ticker ??= Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted && _watch.isRunning) setState(() {});
+      });
+    } else if (!running && _watch.isRunning) {
+      _watch.stop();
+      _ticker?.cancel();
+      _ticker = null;
+      if (mounted) setState(() {});
+    }
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    super.dispose();
+  }
 
   String _fmtDuration(int? ms) {
-    if (ms == null) return '';
+    if (ms == null || ms <= 0) return '';
     if (ms < 1000) return '${ms}ms';
     final s = ms / 1000;
     if (s < 60) return '${s.toStringAsFixed(1)}s';
@@ -1679,9 +1787,13 @@ class _TurnHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final state = row['state'] as String? ?? '';
-    final fileChanges = row['fileChanges'];
-    final duration = _fmtDuration((row['activeMs'] as num?)?.toInt());
+    final state = _state;
+    final fileChanges = widget.row['fileChanges'];
+    final activeMs = (widget.row['activeMs'] as num?)?.toInt();
+    final duration = _fmtDuration(activeMs);
+    final liveMs = (activeMs != null && activeMs > 0)
+        ? activeMs
+        : _watch.elapsedMilliseconds;
 
     String stats = '';
     if (fileChanges is Map) {
@@ -1696,15 +1808,22 @@ class _TurnHeader extends StatelessWidget {
       stats = parts.join(' ');
     }
 
+    final errSummary = widget.errorSummary?.trim();
+    final liveLabel = _fmtDuration(liveMs);
     final label = switch (state) {
-      'running' => '本轮执行中',
+      'running' => liveLabel.isEmpty
+          ? '本轮执行中'
+          : '本轮执行中 · $liveLabel',
       'completedSuccess' => [
           '本轮完成',
           if (duration.isNotEmpty) duration,
           if (stats.isNotEmpty) stats,
         ].join(' · '),
       'completedInterrupted' => '已中断',
-      'failed' => '本轮失败',
+      'failed' => [
+          '本轮失败',
+          if (errSummary != null && errSummary.isNotEmpty) errSummary,
+        ].join(' · '),
       _ => '',
     };
     if (label.isEmpty) return const SizedBox.shrink();
@@ -1719,13 +1838,17 @@ class _TurnHeader extends StatelessWidget {
       child: Row(
         children: [
           const Expanded(child: Divider()),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 10),
-            child: Text(
-              label,
-              style: TextStyle(
-                  fontSize: 11,
-                  color: color.withValues(alpha: 0.9)),
+          Flexible(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              child: Text(
+                label,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    fontSize: 11,
+                    color: color.withValues(alpha: 0.9)),
+              ),
             ),
           ),
           const Expanded(child: Divider()),

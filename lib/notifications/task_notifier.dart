@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:flutter/widgets.dart';
+
 import '../protocol/conversation.dart';
 import '../protocol/zemote_client.dart';
 import 'notifications.dart';
@@ -18,6 +20,13 @@ class TaskNotifier {
 
   SessionsIndexSubscription? _sub;
   Map<String, String> _prevPhases = {};
+  /// taskId → lastActivityAt already announced. Stale repeats (identical
+  /// preview, e.g. after reconnect snapshots) are suppressed.
+  final Map<String, int> _lastNotifiedActivity = {};
+  /// Completion alerts are pointless while the user is looking at the app:
+  /// they also re-fire on every resume via reconnect snapshots.
+  bool _appResumed = true;
+  AppLifecycleListener? _lifecycle;
   bool _active = false;
   bool _disposed = false;
   bool _permissionChecked = false;
@@ -31,6 +40,11 @@ class TaskNotifier {
     required this.onOpenTask,
   }) {
     notifications.setTapHandler(_handleTap);
+    _lifecycle = AppLifecycleListener(onStateChange: (state) {
+      _appResumed = state == AppLifecycleState.resumed;
+    });
+    final now = WidgetsBinding.instance.lifecycleState;
+    _appResumed = now == null || now == AppLifecycleState.resumed;
   }
 
   bool get isActive => _active;
@@ -65,8 +79,16 @@ class TaskNotifier {
     _prevPhases = {for (final e in sub.state.list) e.sessionId: e.phase};
 
     for (final c in update.completed) {
+      // Suppress while the user is in the app (they see the chat), and
+      // suppress repeats of an already-announced activity marker (stale
+      // previews re-arriving with reconnect snapshots).
+      if (_appResumed) break;
+      final marker = c.lastActivityAt;
+      final last = _lastNotifiedActivity[c.taskId];
+      if (marker > 0 && last != null && marker <= last) continue;
+      if (marker > 0) _lastNotifiedActivity[c.taskId] = marker;
       _safe(notifications.notifyTaskCompleted(
-        title: '任务完成',
+        title: completionTitleFor(c.phase),
         text: c.preview.trim().isEmpty ? c.title : '${c.title}\n${c.preview}',
         payload: {'taskId': c.taskId, 'title': c.title},
       ));
@@ -121,6 +143,7 @@ class TaskNotifier {
     _disposed = true;
     _active = false;
     _trailingTimer?.cancel();
+    _lifecycle?.dispose();
     final sub = _sub;
     _sub = null;
     if (sub != null) {
