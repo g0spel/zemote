@@ -2,6 +2,13 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.7.1] - 2026-08-19
+
+### Fixed
+- 文件面板报 `ChannelRpcError: {}`：`conversationFileChangesV4` 的 target 应传文本行（userInput/assistantText）的 `{rowId, entityId}`（与官方客户端长按菜单一致），此前误传了 turnHeader 行被服务端拒绝。现取会话最后一条文本行。
+- RPC 错误信息现在完整渲染 message 与 data（此前空 message 只显示 `{}`）。
+- 待办解析增强：支持单计划包裹（`plan/currentPlan/activePlan`）与"计划列表→内嵌 todos"的一层展开；完成态识别增加 `checked/isDone` 字段。
+
 ## [0.7.0] - 2026-08-19
 
 ### Added

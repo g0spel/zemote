@@ -2112,21 +2112,26 @@ class _InsightsRowState extends State<_InsightsRow> {
       setState(() => _plans = plans);
     } catch (e) {
       if (!mounted) return;
-      setState(() => _plansError = '$e');
+      setState(() => _plansError = _fmtRpcError(e));
     } finally {
       if (mounted) setState(() => _plansLoading = false);
     }
   }
 
   Future<void> _loadFiles() async {
-    final headers = widget.state.rows
-        .where((r) => r['kind'] == 'turnHeader' && r['rowId'] != null)
+    // The web client calls conversationFileChangesV4 with the target of a
+    // TEXT row (userInput/assistantText) — that's the shape the server
+    // accepts; a turnHeader rowId gets rejected with an empty error.
+    final textRows = widget.state.rows
+        .where((r) =>
+            (r['kind'] == 'userInput' || r['kind'] == 'assistantText') &&
+            r['rowId'] != null)
         .toList();
-    if (headers.isEmpty) {
+    if (textRows.isEmpty) {
       setState(() => _fileChanges = null);
       return;
     }
-    final last = headers.last;
+    final last = textRows.last;
     setState(() {
       _filesLoading = true;
       _filesError = null;
@@ -2143,17 +2148,61 @@ class _InsightsRowState extends State<_InsightsRow> {
       setState(() => _fileChanges = res);
     } catch (e) {
       if (!mounted) return;
-      setState(() => _filesError = '$e');
+      setState(() => _filesError = _fmtRpcError(e));
     } finally {
       if (mounted) setState(() => _filesLoading = false);
     }
   }
 
-  int? get _todoCount {
-    final items = parseInsightList(
-        _plans, const ['todos', 'items', 'plans', 'steps', 'list']);
-    return items?.length;
+  /// ChannelRpcError often carries the real cause in [ChannelRpcError.data]
+  /// with an empty message — surface both.
+  static String _fmtRpcError(Object e) {
+    if (e is ChannelRpcError) {
+      final msg = e.message.isEmpty ? '(服务端未返回错误信息)' : e.message;
+      return e.data == null ? msg : '$msg · ${e.data}';
+    }
+    return '$e';
   }
+
+  /// Todo items with defensive digging:
+  /// - direct list / `data[todos|items|plans|steps|list]`
+  /// - single-plan unwrap: `data[plan|currentPlan|activePlan][todos|steps|items]`
+  /// - one-level flatten: a list of PLANS each holding todos → the todos.
+  /// Returns null when nothing list-shaped is found (caller falls back to
+  /// the raw JSON view so the real shape stays visible).
+  List<Map<String, dynamic>>? _todoItems() {
+    if (_plans == null) return null;
+    List<Map<String, dynamic>>? items = parseInsightList(
+        _plans, const ['todos', 'items', 'plans', 'steps', 'list'],
+        allowEmpty: true);
+    if (items == null && _plans is Map) {
+      for (final k in const ['plan', 'currentPlan', 'activePlan']) {
+        final v = (_plans as Map)[k];
+        if (v is Map) {
+          items = parseInsightList(
+              v, const ['todos', 'steps', 'items'],
+              allowEmpty: true);
+          if (items != null) break;
+        }
+      }
+    }
+    if (items == null) return null;
+    final flattened = <Map<String, dynamic>>[];
+    var sawNested = false;
+    for (final e in items) {
+      final inner =
+          parseInsightList(e, const ['todos', 'steps', 'items']);
+      if (inner != null) {
+        sawNested = true;
+        flattened.addAll(inner);
+      } else {
+        flattened.add(e);
+      }
+    }
+    return sawNested ? flattened : items;
+  }
+
+  int? get _todoCount => _todoItems()?.length;
 
   int get _turnFileTotal {
     var total = 0;
@@ -2303,13 +2352,17 @@ class _InsightsRowState extends State<_InsightsRow> {
   // ------------------------------------------------------------ todo panel
 
   bool _todoDone(Map<String, dynamic> e) {
-    final v = '${e['status'] ?? e['state'] ?? e['done'] ?? ''}'.toLowerCase();
+    final v =
+        '${e['status'] ?? e['state'] ?? e['done'] ?? e['checked'] ?? e['isDone'] ?? ''}'
+            .toLowerCase();
     return v == 'true' || v == 'done' || v == 'completed' ||
         v == 'success' || v == 'checked';
   }
 
   String _todoText(Map<String, dynamic> e) {
-    for (final k in const ['content', 'text', 'title', 'step', 'description']) {
+    for (final k in const [
+      'content', 'text', 'title', 'step', 'description', 'name',
+    ]) {
       final v = e[k];
       if (v is String && v.isNotEmpty) return v;
     }
@@ -2335,9 +2388,7 @@ class _InsightsRowState extends State<_InsightsRow> {
     } else if (_plans == null) {
       body = const SizedBox.shrink();
     } else {
-      final items = parseInsightList(
-          _plans, const ['todos', 'items', 'plans', 'steps', 'list'],
-          allowEmpty: true);
+      final items = _todoItems();
       if (items == null) {
         body = _jsonFallback(_plans);
       } else if (items.isEmpty) {
