@@ -68,7 +68,7 @@ String tr(BuildContext context, String key) {
 }
 
 const _zh = {
-  'app.title': 'Zemote 远程控制',
+  'app.title': 'ZemoteS 远程控制',
   'nav.tasks': '任务',
   'nav.settings': '设置',
   'home.search': '搜索任务…',
@@ -106,7 +106,7 @@ const _zh = {
 };
 
 const _en = {
-  'app.title': 'Zemote Remote',
+  'app.title': 'ZemoteS Remote',
   'nav.tasks': 'Tasks',
   'nav.settings': 'Settings',
   'home.search': 'Search tasks…',

@@ -1,4 +1,4 @@
-package app.zemote
+package dev.g0spel.zemotes
 
 import android.app.Notification
 import android.app.NotificationChannel

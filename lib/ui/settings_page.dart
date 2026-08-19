@@ -196,7 +196,7 @@ class SettingsPage extends StatelessWidget {
                 ListTile(
                   leading: const Icon(Icons.extension_outlined, size: 20),
                   title: const Text('服务管理'),
-                  subtitle: const Text('插件 / 定时任务 / MCP / Skills',
+                  subtitle: const Text('插件 / 技能 / 命令',
                       style: TextStyle(fontSize: 12)),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () => Navigator.of(context)
@@ -259,15 +259,15 @@ class SettingsPage extends StatelessWidget {
         ),
         const SizedBox(height: 24),
         Center(
-          child: Text('Zemote (Flutter) · 协议复刻版',
+          child: Text('ZemoteS (Flutter) · 协议复刻版',
               style: TextStyle(fontSize: 11, color: ZInk.ghost(context))),
         ),
         const SizedBox(height: 6),
         Center(
           child: InkWell(
-            onTap: () => _copyUrl(context, 'https://github.com/HumanAILoop/zemote'),
+            onTap: () => _copyUrl(context, 'https://github.com/g0spel/zemote-s'),
             child: Text(
-              'GitHub: https://github.com/HumanAILoop/zemote',
+              'GitHub: https://github.com/g0spel/zemote-s',
               style: TextStyle(
                 fontSize: 11,
                 color: ZInk.faint(context),

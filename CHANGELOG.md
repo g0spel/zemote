@@ -2,6 +2,19 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.9.0] - 2026-08-19
+
+### Changed
+- **更名 ZemoteS**，与上游 [HumanAILoop/zemote](https://github.com/HumanAILoop/zemote) 区分：
+  - 仓库改名 `g0spel/zemote-s`（应用内更新源、设置页 GitHub 链接、README 徽章同步）；
+  - Android 包名 `dev.g0spel.zemotes`（原 `dev.g0spel.zemote`；**已装版本需卸载重装一次**，签名键不变）；
+  - 应用显示名改为 ZemoteS（桌面图标 / 各页标题 / 中英文案）。
+- **平台收敛为 Android + Web**：移除 Windows 平台目录；Web 保留编译冒烟与调试用途。
+
+### Fixed
+- 设置页残留清理：服务管理副标题同步为"插件 / 技能 / 命令"（上轮删除定时任务 tab 后未同步）；"关于"GitHub 链接由上游地址改为本仓库。
+- README 全面重写：与上游能力对比表、上游关系说明（协议同源 / 不自动跟随 / 可共存安装）、双平台构建与安装说明、安全说明对齐当前实现。
+
 ## [0.8.1] - 2026-08-19
 
 ### Fixed

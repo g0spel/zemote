@@ -336,7 +336,7 @@ class _AccountsPageState extends State<AccountsPage> {
         final session = widget.session;
         return Scaffold(
           appBar: AppBar(
-            title: const Text('Zemote 远程控制'),
+            title: const Text('ZemoteS 远程控制'),
             actions: [
               IconButton(
                 icon: const Icon(Icons.terminal),

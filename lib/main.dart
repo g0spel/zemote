@@ -84,7 +84,7 @@ class _ZemoteAppState extends State<ZemoteApp> {
         child: AnimatedBuilder(
           animation: Listenable.merge([_theme, _uiSettings]),
           builder: (context, _) => MaterialApp(
-            title: 'Zemote',
+            title: 'ZemoteS',
             debugShowCheckedModeBanner: false,
             navigatorKey: navigatorKey,
             theme: buildLightTheme(),

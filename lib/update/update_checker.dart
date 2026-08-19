@@ -5,7 +5,7 @@ import 'package:http/http.dart' as http;
 import 'app_version.dart';
 
 /// Release repository this fork checks for updates against.
-const updateRepo = 'g0spel/zemote';
+const updateRepo = 'g0spel/zemote-s';
 
 /// Result of an update check against the GitHub latest release.
 class UpdateInfo {
@@ -28,7 +28,7 @@ class UpdateInfo {
   });
 }
 
-/// Queries `https://api.github.com/repos/g0spel/zemote/releases/latest`
+/// Queries `https://api.github.com/repos/g0spel/zemote-s/releases/latest`
 /// and compares the release tag with [currentVersion]. The release tag is
 /// `vX.Y.Z`; the CI (`build-apk.yml`) uploads `app-release.apk` and
 /// `app-release.apk.sha256` as assets.
