@@ -1010,7 +1010,7 @@ class _TurnGroupWidget extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(top: 2, bottom: 2),
       child: Text(text,
-          style: TextStyle(fontSize: 9, color: ZInk.faint(context))),
+          style: TextStyle(fontSize: 10, color: ZInk.faint(context))),
     );
   }
 

@@ -470,7 +470,91 @@ void main() {
       expect(state.sessions['main-1']!.parentSessionId, isNull);
     });
   });
+
+
+  group('arrival stamps (_zemoteTs)', () {
+    late ConversationState state;
+
+    setUp(() {
+      state = ConversationState();
+    });
+
+    test('row.appended stamps arrival time', () {
+      _injectSnapshot(state, seq: 1);
+      state.applyFrame({
+        'payload': {
+          'kind': 'deltas',
+          'deltas': [
+            {'op': 'row.appended', 'row': {'rowId': 7, 'kind': 'userInput', 'text': 'hi'}},
+          ],
+        },
+        'fromSeq': 1,
+        'toSeq': 2,
+      }, onGap: () => fail('no gap'));
+      final ts = state.rows.single['_zemoteTs'];
+      expect(ts, isA<int>());
+      expect(ts, greaterThan(0));
+    });
+
+    test('snapshot replacement carries stamps by rowId', () {
+      _injectSnapshot(state, seq: 1);
+      state.applyFrame({
+        'payload': {
+          'kind': 'deltas',
+          'deltas': [
+            {'op': 'row.appended', 'row': {'rowId': 7, 'kind': 'userInput', 'text': 'hi'}},
+          ],
+        },
+        'fromSeq': 1,
+        'toSeq': 2,
+      }, onGap: () => fail('no gap'));
+      final stamped = state.rows.single['_zemoteTs'];
+
+      // Server resyncs with a fresh snapshot containing the same row.
+      state.applyFrame({
+        'payload': {
+          'kind': 'snapshot',
+          'snapshot': {
+            'rows': {
+              'window': [
+                {'rowId': 1, 'kind': 'assistantText', 'text': 'history'},
+                {'rowId': 7, 'kind': 'userInput', 'text': 'hi'},
+              ],
+              'totalCount': 2,
+              'firstRowId': 1,
+            },
+          },
+        },
+        'toSeq': 3,
+      }, onGap: () => fail('no gap'));
+
+      final byId = {for (final r in state.rows) r['rowId']: r};
+      expect(byId[7]!['_zemoteTs'], stamped); // carried over
+      expect(byId[1]!.containsKey('_zemoteTs'), isFalse); // history unstamped
+    });
+
+    test('row.upserted keeps the original stamp', () {
+      _injectSnapshot(state, rows: [
+        {'rowId': 1, 'kind': 'user', 'text': 'old'},
+      ]);
+      // Upsert of an unstamped row must not blow up on typed maps.
+      state.applyFrame({
+        'payload': {
+          'kind': 'deltas',
+          'deltas': [
+            {'op': 'row.upserted', 'row': {'rowId': 1, 'kind': 'user', 'text': 'updated'}},
+          ],
+        },
+        'fromSeq': 5,
+        'toSeq': 6,
+      }, onGap: () => fail('no gap'));
+      expect(state.rows.single['text'], 'updated');
+      expect(state.rows.single.containsKey('_zemoteTs'), isFalse);
+    });
+  });
+
 }
+
 
 void _injectSnapshot(
   ConversationState state, {

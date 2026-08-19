@@ -2,6 +2,11 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.6.1] - 2026-08-19
+
+### Fixed
+- 消息时间戳实际不显示：协议的快照（初始加载与重同步）会整体替换行列表，把实时到达时打上的时间标记一并抹掉。现在快照替换时按 rowId 携带原标记，历史行仍不显示时间。时间标签字号 9→10 提高可见性。
+
 ## [0.6.0] - 2026-08-19
 
 ### Fixed

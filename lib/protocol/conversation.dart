@@ -1323,12 +1323,26 @@ class ConversationState extends ChangeNotifier {
     final rowsObj = snap['rows'];
     if (rowsObj is Map) {
       final window = rowsObj['window'];
-      rows = window is List
-          ? window
-              .whereType<Map>()
-              .map((e) => e.cast<String, dynamic>())
-              .toList()
-          : [];
+      if (window is List) {
+        // Snapshots replace rows wholesale: carry view-layer arrival
+        // stamps across by rowId, else every resync wipes the HH:mm
+        // labels of rows observed live. History rows stay unstamped.
+        final prev = <String, dynamic>{};
+        for (final r in rows) {
+          final id = r['rowId'];
+          if (id != null) prev['$id'] = r['_zemoteTs'];
+        }
+        final list = <Map<String, dynamic>>[];
+        for (final e in window.whereType<Map>()) {
+          final row = e.cast<String, dynamic>();
+          final ts = prev['${row['rowId']}'];
+          if (ts != null) row['_zemoteTs'] = ts;
+          list.add(row);
+        }
+        rows = list;
+      } else {
+        rows = [];
+      }
       totalCount = (rowsObj['totalCount'] as num?)?.toInt() ?? rows.length;
       firstRowId = (rowsObj['firstRowId'] as num?)?.toInt();
     } else {
