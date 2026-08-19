@@ -8,7 +8,12 @@ import '../state/log_store.dart';
 import 'theme.dart';
 
 class LogPage extends StatefulWidget {
-  const LogPage({super.key});
+  /// Filter mode: true shows ONLY `[诊断]` entries (the diagnostics log
+  /// page), false shows everything EXCEPT them (the protocol log page) —
+  /// the two pages complement each other with no overlap.
+  final bool diagnosticsOnly;
+
+  const LogPage({super.key, this.diagnosticsOnly = false});
 
   @override
   State<LogPage> createState() => _LogPageState();
@@ -36,17 +41,22 @@ class _LogPageState extends State<LogPage> {
     }
   }
 
+  List<LogEntry> get _visibleEntries => LogStore.instance.entries
+      .where((e) => e.isDiagnostic == widget.diagnosticsOnly)
+      .toList();
+
   Future<void> _copyAll() async {
-    final text = LogStore.instance.entries.map((e) => e.plain).join('\n');
+    final entries = _visibleEntries;
+    final text = entries.map((e) => e.plain).join('\n');
     await Clipboard.setData(ClipboardData(text: text));
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('已复制 ${LogStore.instance.entries.length} 条日志')));
+          SnackBar(content: Text('已复制 ${entries.length} 条日志')));
     }
   }
 
   Future<void> _export() async {
-    final text = LogStore.instance.entries.map((e) => e.plain).join('\n');
+    final text = _visibleEntries.map((e) => e.plain).join('\n');
     try {
       final path = await FilePicker.saveFile(
         dialogTitle: '导出协议日志',
@@ -68,9 +78,10 @@ class _LogPageState extends State<LogPage> {
 
   @override
   Widget build(BuildContext context) {
+    final diag = widget.diagnosticsOnly;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('协议日志'),
+        title: Text(diag ? '诊断日志' : '协议日志'),
         actions: [
           IconButton(
             icon: const Icon(Icons.copy_all_outlined),
@@ -82,19 +93,21 @@ class _LogPageState extends State<LogPage> {
             tooltip: '导出为文件',
             onPressed: _export,
           ),
-          IconButton(
-            icon: const Icon(Icons.delete_outline),
-            tooltip: '清空',
-            onPressed: () => LogStore.instance.clear(),
-          ),
+          if (!diag)
+            IconButton(
+              icon: const Icon(Icons.delete_outline),
+              tooltip: '清空',
+              onPressed: () => LogStore.instance.clear(),
+            ),
         ],
       ),
       body: AnimatedBuilder(
         animation: LogStore.instance,
         builder: (context, _) {
-          final entries = LogStore.instance.entries;
+          final entries = _visibleEntries;
           if (entries.isEmpty) {
-            return const Center(child: Text('暂无日志'));
+            return Center(
+                child: Text(diag ? '暂无诊断条目' : '暂无日志'));
           }
           return ListView.builder(
             controller: _scrollController,

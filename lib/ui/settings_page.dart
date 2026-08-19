@@ -171,6 +171,17 @@ class SettingsPage extends StatelessWidget {
           child: Column(
             children: [
               ListTile(
+                leading: const Icon(Icons.monitor_heart_outlined, size: 20),
+                title: const Text('诊断日志'),
+                subtitle: const Text('故障原因与协议失配提示',
+                    style: TextStyle(fontSize: 12)),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                        builder: (_) => const LogPage(diagnosticsOnly: true))),
+              ),
+              const Divider(indent: 52),
+              ListTile(
                 leading: const Icon(Icons.terminal, size: 20),
                 title: const Text('协议日志'),
                 subtitle: const Text('查看 relay / IPC / V4 帧日志',
