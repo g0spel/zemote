@@ -57,6 +57,62 @@ void main() {
       ];
       expect(removeEchoedTexts(echoes, rows), hasLength(1));
     });
+
+    test('same text sent twice retires exactly two echoes, oldest first',
+        () {
+      final echoes = [
+        {'text': '继续', 'ts': 1, 'status': 'sent'},
+        {'text': '继续', 'ts': 2, 'status': 'sent'},
+      ];
+      // Only the first send is confirmed so far.
+      final oneRow = [
+        {'kind': 'userInput', 'text': '继续', 'rowId': 5},
+      ];
+      final kept1 = removeEchoedTexts(echoes, oneRow);
+      expect(kept1, hasLength(1));
+      expect(kept1.first['ts'], 2); // the OLDEST echo was retired
+
+      // Second confirmation retires the remaining echo.
+      final twoRows = [
+        {'kind': 'userInput', 'text': '继续', 'rowId': 5},
+        {'kind': 'userInput', 'text': '继续', 'rowId': 9},
+      ];
+      expect(removeEchoedTexts(echoes, twoRows), isEmpty);
+    });
+
+    test('failed echoes are never retired (kept for retry)', () {
+      final echoes = [
+        {'text': '你好', 'ts': 1, 'status': 'failed', 'error': 'timeout'},
+        {'text': '你好', 'ts': 2, 'status': 'sent'},
+      ];
+      // The confirmed row belongs to the SECOND (successful) echo; the
+      // failed one must stay visible for tap-to-retry.
+      final rows = [
+        {'kind': 'userInput', 'text': '你好', 'rowId': 3},
+      ];
+      final kept = removeEchoedTexts(echoes, rows);
+      expect(kept, hasLength(1));
+      expect(kept.first['status'], 'failed');
+    });
+  });
+
+  group('lastUserInputRowId (processing badge target)', () {
+    test('returns the newest userInput rowId', () {
+      final rows = [
+        {'kind': 'userInput', 'rowId': 1, 'text': 'a'},
+        {'kind': 'assistantText', 'rowId': 2, 'text': 'b'},
+        {'kind': 'userInput', 'rowId': 3, 'text': 'c'},
+        {'kind': 'turnHeader', 'rowId': 4, 'state': 'running'},
+      ];
+      expect(lastUserInputRowId(rows), 3);
+    });
+
+    test('null when no user rows', () {
+      expect(lastUserInputRowId(const []), isNull);
+      expect(lastUserInputRowId([
+        {'kind': 'assistantText', 'rowId': 1},
+      ]), isNull);
+    });
   });
 
   group('ConversationState notify coalescing', () {

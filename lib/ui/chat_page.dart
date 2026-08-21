@@ -44,18 +44,39 @@ class _PendingFile {
   _PendingFile(this.fileName, this.mime, this.bytes);
 }
 
-/// Drops echoes whose text already exists as a real userInput row (the
-/// server-confirmed copy has arrived). Pure for tests.
+/// Retires echoes whose server-confirmed userInput rows have arrived.
+/// Counts per text (sending the same text twice must retire exactly two
+/// echoes, not both at the first confirmation), oldest echo first, and
+/// never retires a `failed` echo — it must stay for retry. Pure for tests.
 List<Map<String, dynamic>> removeEchoedTexts(
     List<Map<String, dynamic>> echoes, List<Map<String, dynamic>> rows) {
   if (echoes.isEmpty) return echoes;
-  final confirmed = <String>{
-    for (final r in rows)
-      if (r['kind'] == 'userInput') '${r['text'] ?? ''}'.trim(),
-  };
-  return echoes
-      .where((e) => !confirmed.contains('${e['text']}'.trim()))
-      .toList();
+  final confirmed = <String, int>{};
+  for (final r in rows) {
+    if (r['kind'] != 'userInput') continue;
+    final t = '${r['text'] ?? ''}'.trim();
+    confirmed[t] = (confirmed[t] ?? 0) + 1;
+  }
+  final remaining = <String, int>{...confirmed};
+  return echoes.where((e) {
+    if (e['status'] == 'failed') return true;
+    final t = '${e['text'] ?? ''}'.trim();
+    final n = remaining[t] ?? 0;
+    if (n > 0) {
+      remaining[t] = n - 1;
+      return false;
+    }
+    return true;
+  }).toList();
+}
+
+/// rowId of the LAST userInput row (the one whose turn is processed next),
+/// or null when the conversation has none. Pure for tests.
+num? lastUserInputRowId(List<Map<String, dynamic>> rows) {
+  for (final r in rows.reversed) {
+    if (r['kind'] == 'userInput') return r['rowId'] as num?;
+  }
+  return null;
 }
 
 class _ChatPageState extends State<ChatPage> {
@@ -67,15 +88,12 @@ class _ChatPageState extends State<ChatPage> {
   String? _error;
   bool _sending = false;
 
-  /// Optimistic echoes for just-sent messages: shown immediately on send,
-  /// removed once the server's userInput row arrives (see
-  /// [removeEchoedTexts]). Never enters protocol rows/revisions.
+  /// Optimistic echoes for just-sent messages: shown the moment the user
+  /// hits send, retired once the server's userInput row arrives (see
+  /// [removeEchoedTexts]). Status evolves sending → sent; a failed echo
+  /// stays for tap-to-retry and is never auto-retired. Never enters
+  /// protocol rows/revisions.
   final List<Map<String, dynamic>> _echoes = [];
-
-  void _addEcho(String text) {
-    setState(() => _echoes.add({'text': text, 'ts': DateTime.now().millisecondsSinceEpoch}));
-    _scrollToBottom();
-  }
 
   void _dedupeEchoes() {
     final state = _state;
@@ -280,17 +298,18 @@ class _ChatPageState extends State<ChatPage> {
     }
   }
 
-  Future<List<Map<String, dynamic>>> _uploadPending(String sessionId) async {
+  Future<List<Map<String, dynamic>>> _uploadFiles(
+      List<_PendingFile> files, String sessionId) async {
     final uploaded = <Map<String, dynamic>>[];
-    for (var i = 0; i < _pendingFiles.length; i++) {
-      final file = _pendingFiles[i];
+    for (var i = 0; i < files.length; i++) {
+      final file = files[i];
       final descriptor = await _transport.attachmentPut(
         sessionId,
         fileName: file.fileName,
         mime: file.mime,
         bytes: file.bytes,
-        onProgress: (p) => setState(() =>
-            _uploadProgress = (i + p) / _pendingFiles.length),
+        onProgress: (p) =>
+            setState(() => _uploadProgress = (i + p) / files.length),
       );
       uploaded.add(descriptor);
     }
@@ -324,7 +343,8 @@ class _ChatPageState extends State<ChatPage> {
     }
 
     // held-queue confirmation: when inputRouting is `choice` the user
-    // picks whether to clear the held queue or keep it.
+    // picks whether to clear the held queue or keep it. Asked BEFORE the
+    // echo goes up so cancelling leaves nothing on screen.
     String? heldDisposition;
     final state = _state;
     if (state != null &&
@@ -334,12 +354,46 @@ class _ChatPageState extends State<ChatPage> {
       if (heldDisposition == null) return; // cancelled
     }
 
+    // Echo goes up the moment the user hits send (WeChat-style): the
+    // message is part of the stream from the start and only its delivery
+    // badge evolves — sending → sent → (processing once the turn runs).
+    // `files` move into the echo so a failed send keeps them for retry.
+    final echo = <String, dynamic>{
+      'text': text,
+      'ts': DateTime.now().millisecondsSinceEpoch,
+      'status': 'sending',
+      'attachments': null,
+      'files': List<_PendingFile>.from(_pendingFiles),
+    };
     setState(() {
+      _echoes.add(echo);
+      _inputController.clear();
+      _pendingFiles.clear();
       _sending = true;
       _uploadProgress = null;
       _showSlash = false;
       _progress = null;
     });
+    _scrollToBottom();
+    await _deliverEcho(echo, heldDisposition: heldDisposition);
+  }
+
+  /// Sends (or re-sends) one echo's message and drives its status:
+  /// `sending` → `sent` on an accepted ack, `failed` (+reason) on a
+  /// rejection/timeout/error. Handles both the fresh-send path and the
+  /// tap-to-retry path (including re-creating a session in draft mode).
+  Future<void> _deliverEcho(
+    Map<String, dynamic> echo, {
+    String? heldDisposition,
+  }) async {
+    void mark(String status, [String? error]) {
+      if (!mounted) return;
+      setState(() {
+        echo['status'] = status;
+        if (error != null) echo['error'] = error;
+      });
+    }
+
     try {
       var sessionId = _sessionId;
       if (sessionId == null) {
@@ -349,8 +403,9 @@ class _ChatPageState extends State<ChatPage> {
         // Plain text first message is sent WITH createSession (firstInput,
         // mirrors the official composer). This avoids a send-before-subscribe
         // race where the first command can be dropped on a fresh session.
+        final text = '${echo['text']}';
         final canUseFirstInput = text.isNotEmpty &&
-            _pendingFiles.isEmpty &&
+            (echo['files'] as List).isEmpty &&
             !text.startsWith('/goal ') &&
             heldDisposition == null;
         try {
@@ -364,17 +419,18 @@ class _ChatPageState extends State<ChatPage> {
         } catch (e) {
           log('[chat] createSession failed after '
               '${sw.elapsedMilliseconds}ms: $e');
-          rethrow;
+          mark('failed', '$e');
+          _toast('发送失败: $e');
+          return;
         }
         log('[chat] createSession ok in ${sw.elapsedMilliseconds}ms');
         _sessionId = sessionId;
         // 2) subscribe in the background — must NOT block sending
         setState(() => _progress = null);
         if (canUseFirstInput) {
-          // Message already sent with the session; just display history.
-          _inputController.clear();
-          _addEcho(text);
-          setState(() => _pendingFiles.clear());
+          // Message already sent with the session; the history snapshot
+          // will confirm it and retire the echo.
+          mark('sent');
           _subscribe();
           return;
         }
@@ -382,6 +438,7 @@ class _ChatPageState extends State<ChatPage> {
         // subscription, so wait for it before proceeding.
         await _subscribe();
       }
+      final text = '${echo['text']}';
       if (text.startsWith('/goal ')) {
         final res = await _transport.sendGoalCommand(
           sessionId,
@@ -389,16 +446,23 @@ class _ChatPageState extends State<ChatPage> {
           heldQueueDisposition: heldDisposition,
         );
         if (_ackRejected(res)) {
+          mark('failed', _ackReason(res));
           _toast('发送失败: ${_ackReason(res)}');
           return;
         }
-        _inputController.clear();
+        mark('sent');
         return;
       }
-      List<Map<String, dynamic>>? attachments;
-      if (_pendingFiles.isNotEmpty) {
+      List<Map<String, dynamic>>? attachments =
+          (echo['attachments'] as List?)
+              ?.whereType<Map>()
+              .cast<Map<String, dynamic>>()
+              .toList();
+      final files = (echo['files'] as List<_PendingFile>?) ?? const [];
+      if (files.isNotEmpty && attachments == null) {
         setState(() => _progress = '正在上传附件…');
-        attachments = await _uploadPending(sessionId);
+        attachments = await _uploadFiles(files, sessionId);
+        echo['attachments'] = attachments;
         setState(() => _progress = null);
       }
       final res = await _transport.sendText(
@@ -408,13 +472,13 @@ class _ChatPageState extends State<ChatPage> {
         heldQueueDisposition: heldDisposition,
       );
       if (_ackRejected(res)) {
+        mark('failed', _ackReason(res));
         _toast('发送失败: ${_ackReason(res)}');
         return;
       }
-      _inputController.clear();
-      _addEcho(text);
-      setState(() => _pendingFiles.clear());
+      mark('sent');
     } catch (e) {
+      mark('failed', '$e');
       _toast('发送失败: $e');
     } finally {
       if (mounted) {
@@ -425,6 +489,27 @@ class _ChatPageState extends State<ChatPage> {
         });
       }
     }
+  }
+
+  /// Tap-to-retry for a failed echo: re-asks the held-queue disposition
+  /// when applicable, re-uploads attachments that never made it, and
+  /// drives the same status machine as the original send.
+  Future<void> _retryEcho(Map<String, dynamic> echo) async {
+    if (_sending) return;
+    String? heldDisposition;
+    final state = _state;
+    if (state != null &&
+        state.inputRoutingMode == 'choice' &&
+        state.queueItems.isNotEmpty) {
+      heldDisposition = await _askHeldQueueDisposition();
+      if (heldDisposition == null) return; // cancelled
+    }
+    setState(() {
+      echo['status'] = 'sending';
+      echo['error'] = null;
+      _sending = true;
+    });
+    await _deliverEcho(echo, heldDisposition: heldDisposition);
   }
 
   bool _ackRejected(dynamic res) =>
@@ -775,39 +860,24 @@ class _ChatPageState extends State<ChatPage> {
                               if (index < echoCount) {
                                 final e =
                                     _echoes[echoCount - 1 - index];
-                                return Align(
-                                  alignment: Alignment.centerRight,
-                                  child: Container(
-                                    margin: const EdgeInsets.symmetric(
-                                        vertical: 4),
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 12, vertical: 8),
-                                    constraints: BoxConstraints(
-                                        maxWidth:
-                                            MediaQuery.of(context).size.width *
-                                                0.8),
-                                    decoration: BoxDecoration(
-                                      color: ZColors.primary
-                                          .withValues(alpha: 0.10),
-                                      borderRadius:
-                                          BorderRadius.circular(12),
-                                    ),
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.end,
-                                      children: [
-                                        Text('${e['text']}',
-                                            style: const TextStyle(
-                                                fontSize: 13,
-                                                height: 1.4)),
-                                        const SizedBox(height: 2),
-                                        Text('发送中…',
-                                            style: TextStyle(
-                                                fontSize: 9,
-                                                color: ZInk.faint(context))),
-                                      ],
-                                    ),
-                                  ),
+                                // Same bubble as a confirmed user row, so
+                                // retiring the echo (real row takes over)
+                                // is visually seamless.
+                                return _UserBubble(
+                                  row: {
+                                    'kind': 'userInput',
+                                    'text': e['text'],
+                                    '_zemoteTs': e['ts'],
+                                    if (e['attachments'] != null)
+                                      'attachments': e['attachments'],
+                                  },
+                                  transport: _transport,
+                                  sessionId: _sessionId ?? '',
+                                  badge: '${e['status']}',
+                                  onRetry:
+                                      e['status'] == 'failed'
+                                          ? () => _retryEcho(e)
+                                          : null,
                                 );
                               }
                               final mi = index - echoCount;
@@ -1119,6 +1189,10 @@ class _TurnGroupWidget extends StatelessWidget {
     }
     final first = rows.first;
     if (first['kind'] == 'userInput') {
+      // "Processing" badge: this is the newest user message and its turn
+      // is currently running. The badge clears when the turn completes.
+      final processing = state.isRunning &&
+          first['rowId'] == lastUserInputRowId(state.rows);
       // user message + anything attached to the same turn
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1129,6 +1203,7 @@ class _TurnGroupWidget extends StatelessWidget {
             sessionId: sessionId,
             onAction: onAction,
             state: state,
+            badge: processing ? 'processing' : null,
           ),
           for (final row in rows.skip(1))
             _RowWidget(
@@ -1209,6 +1284,9 @@ class _RowWidget extends StatelessWidget {
   final ConversationState state;
   final bool showFeedback;
 
+  /// Delivery badge for user rows (see [_MsgBadge]).
+  final String? badge;
+
   const _RowWidget({
     required this.row,
     required this.transport,
@@ -1216,6 +1294,7 @@ class _RowWidget extends StatelessWidget {
     required this.onAction,
     required this.state,
     this.showFeedback = true,
+    this.badge,
   });
 
   Map<String, dynamic> get _target => {
@@ -1374,7 +1453,7 @@ class _RowWidget extends StatelessWidget {
   Widget build(BuildContext context) {
     final widget_ = switch (row['kind']) {
       'userInput' => _UserBubble(row: row, transport: transport,
-          sessionId: sessionId),
+          sessionId: sessionId, badge: badge),
       'assistantText' => _AssistantBubble(
           row: row, transport: transport, sessionId: sessionId,
           state: state, showFeedback: showFeedback),
@@ -1396,15 +1475,88 @@ class _RowWidget extends StatelessWidget {
   }
 }
 
+/// Delivery badge under a user bubble. States: `sending` (command in
+/// flight), `sent` (server accepted), `processing` (this message's turn
+/// is running), `failed` (tap to retry).
+class _MsgBadge extends StatelessWidget {
+  final String status;
+  final VoidCallback? onRetry;
+
+  const _MsgBadge({required this.status, this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    final failed = status == 'failed';
+    final Widget content;
+    switch (status) {
+      case 'sending':
+        content = Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(Icons.schedule, size: 11, color: ZInk.faint(context)),
+          const SizedBox(width: 3),
+          Text('发送中',
+              style: TextStyle(fontSize: 9.5, color: ZInk.faint(context))),
+        ]);
+      case 'sent':
+        content = Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(Icons.check, size: 11, color: ZInk.faint(context)),
+          const SizedBox(width: 3),
+          Text('已发送',
+              style: TextStyle(fontSize: 9.5, color: ZInk.faint(context))),
+        ]);
+      case 'processing':
+        content = Row(mainAxisSize: MainAxisSize.min, children: [
+          const SizedBox(
+              width: 11,
+              height: 11,
+              child: CircularProgressIndicator(strokeWidth: 1.4)),
+          const SizedBox(width: 3),
+          Text('处理中',
+              style:
+                  TextStyle(fontSize: 9.5, color: ZColors.running)),
+        ]);
+      default: // failed
+        content = Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(Icons.error_outline, size: 12, color: ZColors.danger),
+          const SizedBox(width: 3),
+          Text('发送失败 · 点击重试',
+              style:
+                  TextStyle(fontSize: 9.5, color: ZColors.danger)),
+        ]);
+    }
+    if (!failed) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 3),
+        child: content,
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.only(top: 3),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onRetry,
+        child: content,
+      ),
+    );
+  }
+}
+
 class _UserBubble extends StatelessWidget {
   final Map<String, dynamic> row;
   final ConversationTransport transport;
   final String sessionId;
 
+  /// Delivery badge (see [_MsgBadge]); null renders none.
+  final String? badge;
+
+  /// Retry callback shown when [badge] is `failed`.
+  final VoidCallback? onRetry;
+
   const _UserBubble({
     required this.row,
     required this.transport,
     required this.sessionId,
+    this.badge,
+    this.onRetry,
   });
 
   @override
@@ -1439,6 +1591,8 @@ class _UserBubble extends StatelessWidget {
             if (text.isNotEmpty)
               SelectableText(text,
                   style: const TextStyle(fontSize: 14, height: 1.5)),
+            if (badge != null)
+              _MsgBadge(status: badge!, onRetry: onRetry),
           ],
         ),
       ),
@@ -1532,6 +1686,10 @@ class _AttachmentViewState extends State<_AttachmentView> {
           _imageBytes!,
           width: 220,
           fit: BoxFit.cover,
+          // Decode at DISPLAY size, not source size — a 12MP photo is
+          // ~48MB RGBA at full decode; this caps it at 220 logical px.
+          cacheWidth:
+              (220 * MediaQuery.devicePixelRatioOf(context)).round(),
         ),
       ),
     );
@@ -1721,6 +1879,7 @@ class _ToolCallTile extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           ExpansionTile(
+            initiallyExpanded: true,
             dense: true,
             tilePadding: const EdgeInsets.symmetric(horizontal: 12),
             leading: Icon(icon, size: 15, color: color),
@@ -1753,6 +1912,11 @@ class _ToolCallTile extends StatelessWidget {
                   child: Image.memory(
                     base64Decode(image['base64'] as String),
                     fit: BoxFit.contain,
+                    // Cap the decode at viewport width — inline tool
+                    // outputs can embed multi-megapixel renders.
+                    cacheWidth: (MediaQuery.sizeOf(context).width *
+                            MediaQuery.devicePixelRatioOf(context))
+                        .round(),
                     errorBuilder: (_, __, ___) =>
                         const SizedBox.shrink(),
                   ),
